@@ -1,27 +1,5 @@
-"""
-POST /chat — main patient-facing AI endpoint.
-
-How the frontend should use this:
-
-1. On session start, generate a UUID as session_id. Store it.
-2. Maintain `history: []` and `booking_state: {}` in frontend state.
-3. On every send:
-     - Append the user message to history AFTER getting a response (not before)
-     - POST { session_id, message, history, booking_state }
-     - Display response.reply in the chat UI
-     - Save response.state as the new booking_state for the next request
-     - Append { role: "user", content: message } and
-             { role: "assistant", content: response.reply } to history
-
-4. React to response.state.stage:
-     "emergency"   → show red emergency banner, 1990 hotline button
-     "slots_shown" → optionally highlight the slot options in the UI
-     "confirmed"   → show booking confirmation card, offer payment/receipt
-     "cancelled"   → show cancellation confirmation
-"""
-
 from fastapi import APIRouter, HTTPException
-from app.models.schemas import ChatRequest, ChatResponse, BookingState
+from app.models.schemas import ChatRequest, ChatResponse, BookingState, stage_to_ui_action
 from app.agents.patient_agent import run_agent
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -30,16 +8,38 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """
-    Send a patient message to the HemasHealth IQ agent.
+    ## POST /chat — Patient-facing AI endpoint
 
-    The agent will:
-    - Analyse symptoms and route to the right specialist
-    - Check real-time doctor availability
-    - Present available slots
-    - Book the appointment once patient confirms
-    - Handle emergencies with immediate escalation
+    Send a patient message, get a reply + UI instruction back.
 
-    Returns the agent reply + updated booking state.
+    ### How to use from Next.js
+
+    ```ts
+    const res = await fetch("/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id,      // generate once with uuid()
+        message,         // patient's typed message
+        history,         // full conversation so far
+        booking_state,   // send back exactly what last response returned
+      })
+    })
+    const { reply, ui_action, state } = await res.json()
+
+    // 1. Always display `reply` as the assistant chat bubble
+    // 2. Switch on `ui_action` to decide what component to render:
+    //
+    //   SHOW_CHAT         → just the chat bubble, nothing extra
+    //   SHOW_EMERGENCY    → red banner + 1990 call button
+    //   SHOW_SLOTS        → reply has slot options (render as cards optionally)
+    //   SHOW_PATIENT_FORM → render name/phone input form
+    //   SHOW_PAYMENT      → appointment confirmed, open payment flow
+    //   SHOW_CANCELLED    → show cancellation confirmation card
+    //
+    // 3. Save `state` → send back as `booking_state` next request
+    // 4. Append { role:"user", content: message } and
+    //           { role:"assistant", content: reply } to history
+    ```
     """
     try:
         bs = req.booking_state
@@ -60,8 +60,11 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    new_state = BookingState(**result["state"])
+
     return ChatResponse(
         session_id=req.session_id,
         reply=result["reply"],
-        state=BookingState(**result["state"]),
+        ui_action=stage_to_ui_action(new_state.stage),
+        state=new_state,
     )
