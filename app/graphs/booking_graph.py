@@ -1,20 +1,11 @@
 """
 HemasHealth IQ — LangGraph Booking Graph
 
-How it works:
-  Each patient message triggers one full graph run.
-  The frontend sends the FULL conversation history every turn (stateless backend).
-  The graph runs: agent → (tools → agent)* → END
-  It always ends with an AI reply to the patient.
+Flow per turn:
+  agent → tools → agent → ... → END
+  Always ends with one AI reply to the patient.
 
-Stages tracked in state (returned to frontend on every response):
-  intake        → patient is describing symptoms
-  routing       → route_to_specialist called, specialty identified
-  emergency     → red-flag symptoms detected (frontend shows emergency UI)
-  slots_shown   → availability shown, waiting for patient to pick
-  collecting    → collecting patient name/phone (new patients)
-  confirmed     → appointment booked successfully
-  cancelled     → appointment cancelled
+Each node prints what it's doing so you can follow along in the terminal.
 """
 
 import json
@@ -41,35 +32,67 @@ ALL_TOOLS = [
     cancel_appointment,
 ]
 
+# ── Terminal colours ──────────────────────────────────────────────────────────
+R  = "\033[0m"
+BOLD   = "\033[1m"
+DIM    = "\033[2m"
+CYAN   = "\033[96m"
+GREEN  = "\033[92m"
+YELLOW = "\033[93m"
+MAGENTA= "\033[95m"
+RED    = "\033[91m"
+BLUE   = "\033[94m"
+
+TOOL_COLOURS = {
+    "route_to_specialist":     MAGENTA,
+    "check_availability":      BLUE,
+    "lookup_or_create_patient":YELLOW,
+    "book_appointment":        GREEN,
+    "cancel_appointment":      RED,
+}
+
+def _log_node(name: str, colour: str = CYAN):
+    print(f"\n{DIM}┌─ NODE: {colour}{BOLD}{name}{R}{DIM} {'─' * (40 - len(name))}┐{R}")
+
+def _log_tool_call(tool_name: str, args: dict):
+    c = TOOL_COLOURS.get(tool_name, CYAN)
+    print(f"{DIM}│  🔧 TOOL CALL → {c}{BOLD}{tool_name}{R}")
+    for k, v in args.items():
+        print(f"{DIM}│     {k}: {c}{v}{R}")
+
+def _log_tool_result(tool_name: str, result: dict):
+    c = TOOL_COLOURS.get(tool_name, CYAN)
+    print(f"{DIM}│  ✅ TOOL RESULT ← {c}{BOLD}{tool_name}{R}")
+    for k, v in result.items():
+        print(f"{DIM}│     {k}: {v}{R}")
+
+def _log_stage(old: str, new: str):
+    if old != new:
+        print(f"{DIM}│  📍 STAGE: {YELLOW}{old}{R}{DIM} → {GREEN}{new}{R}")
+
+def _log_node_end():
+    print(f"{DIM}└{'─' * 50}┘{R}")
+
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
-
-    # Booking context — built up across turns
-    stage: str                       # current conversation stage
+    stage: str
     is_emergency: bool
-
-    detected_specialty: str | None   # set after route_to_specialist
-    preferred_location: str | None   # wattala | thalawathugoda
-
-    # Slot the patient chose
+    detected_specialty: str | None
+    preferred_location: str | None
     selected_slot_id: str | None
     selected_slot_datetime: str | None
     selected_doctor_id: str | None
     selected_doctor_name: str | None
-
-    # Patient
-    patient_id: str | None           # set after lookup_or_create_patient
-
-    # Final result
-    appointment_id: str | None       # set after book_appointment succeeds
+    patient_id: str | None
+    appointment_id: str | None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _parse_tool_message(msg: ToolMessage) -> dict:
+def _parse_tool_msg(msg: ToolMessage) -> dict:
     try:
         data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
         return data if isinstance(data, dict) else {}
@@ -77,7 +100,7 @@ def _parse_tool_message(msg: ToolMessage) -> dict:
         return {}
 
 
-# ── Build graph ───────────────────────────────────────────────────────────────
+# ── Graph ─────────────────────────────────────────────────────────────────────
 
 def build_graph():
     settings = get_settings()
@@ -90,20 +113,32 @@ def build_graph():
 
     tool_node = ToolNode(ALL_TOOLS)
 
-    # ── Node: agent ───────────────────────────────────────────────────────────
+    # ── Agent node ────────────────────────────────────────────────────────────
 
     def agent_node(state: AgentState) -> dict:
-        """LLM decides: call a tool, or reply to the patient and stop."""
+        _log_node("AGENT", CYAN)
+        print(f"{DIM}│  💬 Messages in context: {len(state['messages'])}{R}")
+        print(f"{DIM}│  📍 Current stage: {YELLOW}{state.get('stage', 'intake')}{R}")
+
         response = llm.invoke([SystemMessage(content=SYSTEM_PROMPT)] + state["messages"])
+
+        # Log what the LLM decided to do
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            for tc in response.tool_calls:
+                _log_tool_call(tc["name"], tc.get("args", {}))
+        else:
+            preview = str(response.content)[:80].replace("\n", " ")
+            print(f"{DIM}│  💬 Reply: \"{preview}...\"{R}")
+
+        _log_node_end()
         return {"messages": [response]}
 
-    # ── Node: tools ───────────────────────────────────────────────────────────
+    # ── Tools node ────────────────────────────────────────────────────────────
 
     def tools_node(state: AgentState) -> dict:
-        """
-        Execute tool calls, then update booking state based on results.
-        This is the only place state fields (stage, specialty, etc.) are written.
-        """
+        _log_node("TOOLS", MAGENTA)
+
+        old_stage = state.get("stage", "intake")
         result = tool_node.invoke(state)
         tool_messages: list[ToolMessage] = result.get("messages", [])
         extra: dict[str, Any] = {}
@@ -111,46 +146,52 @@ def build_graph():
         for msg in tool_messages:
             if not isinstance(msg, ToolMessage):
                 continue
-            data = _parse_tool_message(msg)
+            data = _parse_tool_msg(msg)
             name = getattr(msg, "name", "")
+            _log_tool_result(name, data)
 
             if name == "route_to_specialist":
-                specialty = data.get("specialty")
+                specialty    = data.get("specialty")
                 is_emergency = data.get("is_emergency", False)
                 extra["detected_specialty"] = specialty
-                extra["is_emergency"] = is_emergency
-                extra["stage"] = "emergency" if is_emergency else "routing"
+                extra["is_emergency"]        = is_emergency
+                extra["stage"]               = "emergency" if is_emergency else "routing"
 
             elif name == "check_availability":
-                # Slots are in the tool message content — the LLM reads and presents them.
-                # We just advance the stage so the frontend knows slots were shown.
                 extra["stage"] = "slots_shown"
 
             elif name == "lookup_or_create_patient":
                 if data.get("patient_id"):
                     extra["patient_id"] = data["patient_id"]
-                    extra["stage"] = "collecting"
+                    extra["stage"]      = "collecting"
 
             elif name == "book_appointment":
                 if data.get("status") == "confirmed":
-                    extra["appointment_id"] = data.get("appointment_id")
-                    extra["selected_doctor_name"] = data.get("doctor_name")
+                    extra["appointment_id"]         = data.get("appointment_id")
+                    extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["selected_slot_datetime"] = data.get("slot_datetime")
-                    extra["stage"] = "confirmed"
-                # If failed, stage stays as-is so the LLM can retry/apologise
+                    extra["stage"]                  = "confirmed"
+                else:
+                    print(f"{DIM}│  ⚠️  booking FAILED: {data.get('error')}{R}")
 
             elif name == "cancel_appointment":
                 if data.get("success"):
                     extra["stage"] = "cancelled"
 
+        new_stage = extra.get("stage", old_stage)
+        _log_stage(old_stage, new_stage)
+        _log_node_end()
+
         return {"messages": tool_messages, **extra}
 
-    # ── Edge: should the agent call more tools or stop? ───────────────────────
+    # ── Router ────────────────────────────────────────────────────────────────
 
     def should_continue(state: AgentState) -> str:
         last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
+            print(f"{DIM}  ↪ routing to TOOLS{R}")
             return "tools"
+        print(f"{DIM}  ↪ routing to END (reply ready){R}")
         return END
 
     # ── Assemble ──────────────────────────────────────────────────────────────

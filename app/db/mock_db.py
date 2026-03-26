@@ -81,22 +81,8 @@ _PATIENTS: list[dict] = [
     },
 ]
 
-_APPOINTMENTS: list[dict] = [
-    {
-        "id":               "appt-001",
-        "patient_id":       "patient-001",
-        "doctor_id":        "doc-001",
-        "slot_id":          "slot-0001",
-        "status":           "confirmed",
-        "symptoms_summary": "Chest pain and shortness of breath",
-        "created_at":       _now(),
-    },
-]
-# Mark that slot as booked in the slots list
-for s in _SLOTS:
-    if s["id"] == "slot-0001":
-        s["is_booked"] = True
-        break
+_APPOINTMENTS: list[dict] = []
+# No pre-booked appointments — all slots start available.
 
 
 # ── DB class — mimics the Supabase client interface used by the tools ─────────
