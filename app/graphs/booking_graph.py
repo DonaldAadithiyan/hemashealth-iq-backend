@@ -106,7 +106,7 @@ def build_graph():
     settings = get_settings()
 
     llm = ChatOpenAI(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.2,
         api_key=settings.openai_api_key,
     ).bind_tools(ALL_TOOLS)
