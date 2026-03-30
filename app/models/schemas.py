@@ -112,22 +112,26 @@ class ChatResponse(BaseModel):
 # ── Appointments (dashboard endpoints) ───────────────────────────────────────
 
 class AppointmentStatus(str, Enum):
-    confirmed = "confirmed"
-    cancelled = "cancelled"
-    completed = "completed"
+    # Values match your Supabase appointments.status CHECK constraint exactly
+    reserved      = "reserved"
+    confirmed     = "confirmed"
+    paid          = "paid"
+    cancelled     = "cancelled"
+    not_attended  = "not_attended"
 
 
 class AppointmentOut(BaseModel):
     id:               str
     patient_id:       str
     doctor_id:        str
-    slot_id:          str
+    appointment_date: str
     status:           AppointmentStatus
-    symptoms_summary: Optional[str] = None
-    created_at:       str
+    reason_for_visit: Optional[str] = None
+    notes:            Optional[str] = None
+    created_at:       Optional[str] = None
+    # Joined fields
     doctor_name:      Optional[str] = None
     doctor_specialty: Optional[str] = None
-    slot_datetime:    Optional[str] = None
     location:         Optional[str] = None
 
 
@@ -136,8 +140,8 @@ class CancelRequest(BaseModel):
 
 
 class RescheduleRequest(BaseModel):
-    new_slot_id:   str = Field(..., description="UUID of the new slot to move to")
-    new_doctor_id: str = Field(..., description="UUID of the doctor for the new slot")
+    new_slot_id:    str = Field(..., description="Synthetic slot ID from check_availability: doctor_id::YYYY-MM-DDTHH:MM")
+    new_doctor_id:  str = Field(..., description="UUID of the doctor for the new slot")
     rescheduled_by: str = Field(..., description="'patient' | 'admin' | 'doctor'")
 
 
