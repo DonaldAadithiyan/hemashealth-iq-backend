@@ -30,6 +30,7 @@ class UIAction(str, Enum):
     SHOW_CONFIRMATION = "SHOW_CONFIRMATION"
     SHOW_PAYMENT      = "SHOW_PAYMENT"
     SHOW_CANCELLED    = "SHOW_CANCELLED"
+    SHOW_RESCHEDULED  = "SHOW_RESCHEDULED"
 
 
 # Map stage → UIAction — single source of truth
@@ -41,6 +42,7 @@ _STAGE_TO_UI: dict[str, UIAction] = {
     "collecting":  UIAction.SHOW_PATIENT_FORM,
     "confirmed":   UIAction.SHOW_PAYMENT,
     "cancelled":   UIAction.SHOW_CANCELLED,
+    "rescheduled": UIAction.SHOW_RESCHEDULED,
 }
 
 def stage_to_ui_action(stage: str) -> UIAction:
@@ -127,6 +129,12 @@ class AppointmentOut(BaseModel):
 
 class CancelRequest(BaseModel):
     cancelled_by: str = Field(..., description="'patient' | 'admin' | 'doctor'")
+
+
+class RescheduleRequest(BaseModel):
+    new_slot_id:   str = Field(..., description="UUID of the new slot to move to")
+    new_doctor_id: str = Field(..., description="UUID of the doctor for the new slot")
+    rescheduled_by: str = Field(..., description="'patient' | 'admin' | 'doctor'")
 
 
 class DoctorOut(BaseModel):

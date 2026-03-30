@@ -14,7 +14,7 @@ These endpoints are read + cancel only, for the dashboard UIs.
 from datetime import date as dt_date
 from fastapi import APIRouter, HTTPException, Query
 from app.db.mock_db import get_db
-from app.models.schemas import AppointmentOut, CancelRequest, AppointmentStatus
+from app.models.schemas import AppointmentOut, CancelRequest, RescheduleRequest, AppointmentStatus
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 
@@ -78,6 +78,39 @@ def get_all_appointments(
     """All appointments — used by the Admin Dashboard."""
     appts = get_db().get_all_appointments(location=location, status=status, limit=limit)
     return [_enrich(a) for a in appts]
+
+
+@router.patch("/{appointment_id}/reschedule", response_model=AppointmentOut)
+def reschedule_appointment_endpoint(appointment_id: str, body: RescheduleRequest):
+    """
+    Reschedule an appointment to a new slot from the dashboard.
+    Frees the old slot and books the new one atomically.
+    """
+    db = get_db()
+
+    appt = db.get_appointment(appointment_id)
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    if appt["status"] == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot reschedule a cancelled appointment")
+
+    new_slot = db.get_slot(body.new_slot_id)
+    if not new_slot:
+        raise HTTPException(status_code=404, detail="New slot not found")
+    if new_slot["is_booked"]:
+        raise HTTPException(status_code=409, detail="That slot is already booked")
+
+    # Free old slot, update appointment, lock new slot
+    db.mark_slot_booked(appt["slot_id"], booked=False)
+    db.update_appointment_slot(
+        appointment_id=appointment_id,
+        new_slot_id=body.new_slot_id,
+        new_doctor_id=body.new_doctor_id,
+    )
+    db.mark_slot_booked(body.new_slot_id, booked=True)
+
+    updated = db.get_appointment(appointment_id)
+    return _enrich(updated)
 
 
 @router.delete("/{appointment_id}")

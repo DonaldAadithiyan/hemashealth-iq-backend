@@ -258,6 +258,21 @@ class MockDB:
                 return True
         return False
 
+    def update_appointment_slot(
+        self,
+        appointment_id: str,
+        new_slot_id:    str,
+        new_doctor_id:  str,
+    ) -> bool:
+        """Update an appointment to a new slot and optionally a new doctor."""
+        for a in self.appointments:
+            if a["id"] == appointment_id:
+                a["slot_id"]   = new_slot_id
+                a["doctor_id"] = new_doctor_id
+                a["status"]    = "confirmed"
+                return True
+        return False
+
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 # All tools import this one instance.

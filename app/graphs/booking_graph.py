@@ -22,7 +22,7 @@ from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.tools.routing import route_to_specialist
 from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
-from app.tools.booking import book_appointment, cancel_appointment
+from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
 
 ALL_TOOLS = [
     route_to_specialist,
@@ -30,6 +30,7 @@ ALL_TOOLS = [
     lookup_or_create_patient,
     book_appointment,
     cancel_appointment,
+    reschedule_appointment,
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ TOOL_COLOURS = {
     "lookup_or_create_patient":YELLOW,
     "book_appointment":        GREEN,
     "cancel_appointment":      RED,
+    "reschedule_appointment":  YELLOW,
 }
 
 def _log_node(name: str, colour: str = CYAN):
@@ -106,7 +108,7 @@ def build_graph():
     settings = get_settings()
 
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.2,
         api_key=settings.openai_api_key,
     ).bind_tools(ALL_TOOLS)
@@ -177,6 +179,12 @@ def build_graph():
             elif name == "cancel_appointment":
                 if data.get("success"):
                     extra["stage"] = "cancelled"
+
+            elif name == "reschedule_appointment":
+                if data.get("status") == "rescheduled":
+                    extra["selected_slot_datetime"] = data.get("new_slot_datetime")
+                    extra["selected_doctor_name"]   = data.get("doctor_name")
+                    extra["stage"]                  = "confirmed"
 
         new_stage = extra.get("stage", old_stage)
         _log_stage(old_stage, new_stage)
