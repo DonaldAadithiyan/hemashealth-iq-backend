@@ -186,6 +186,7 @@ async def main():
                 selected_doctor_name=booking_state.selected_doctor_name,
                 appointment_id=booking_state.appointment_id,
                 is_emergency=booking_state.is_emergency,
+                conversation_summary=booking_state.conversation_summary,
             )
         except Exception as e:
             print(f"\n{RED}{BOLD}  ❌ Error: {e}{R}\n")

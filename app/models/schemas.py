@@ -68,6 +68,10 @@ class BookingState(BaseModel):
     patient_id:             Optional[str] = None
     appointment_id:         Optional[str] = None
 
+    # Conversation summary — set by the summarizer after SUMMARIZE_AFTER_TURNS turns.
+    # Replaces old messages in the context window. Frontend stores and sends back as-is.
+    conversation_summary:   Optional[str] = None
+
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="UUID for this conversation — generate once on session open")

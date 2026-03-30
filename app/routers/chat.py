@@ -12,34 +12,42 @@ async def chat(req: ChatRequest):
 
     Send a patient message, get a reply + UI instruction back.
 
-    ### How to use from Next.js
+    ### Context optimization
+    History is automatically compressed after 6 turns using a summarizer (gpt-4o-mini).
+    The last 4 turns are always kept verbatim. The summary is stored in `state.conversation_summary`
+    and must be sent back on every request inside `booking_state` — the frontend does not need to
+    understand it, just store and return it.
 
+    ### How to use from Next.js
     ```ts
     const res = await fetch("/chat", {
       method: "POST",
       body: JSON.stringify({
-        session_id,      // generate once with uuid()
-        message,         // patient's typed message
+        session_id,      // uuid — generate once per conversation
+        message,         // patient's latest message
         history,         // full conversation so far
-        booking_state,   // send back exactly what last response returned
+        booking_state,   // send back exactly what the last response returned
       })
     })
     const { reply, ui_action, state } = await res.json()
 
-    // 1. Always display `reply` as the assistant chat bubble
-    // 2. Switch on `ui_action` to decide what component to render:
-    //
-    //   SHOW_CHAT         → just the chat bubble, nothing extra
-    //   SHOW_EMERGENCY    → red banner + 1990 call button
-    //   SHOW_SLOTS        → reply has slot options (render as cards optionally)
-    //   SHOW_PATIENT_FORM → render name/phone input form
-    //   SHOW_PAYMENT      → appointment confirmed, open payment flow
-    //   SHOW_CANCELLED    → show cancellation confirmation card
-    //
-    // 3. Save `state` → send back as `booking_state` next request
+    // 1. Display reply as assistant chat bubble
+    // 2. Switch on ui_action to render the right component
+    // 3. Save state as booking_state for next request
     // 4. Append { role:"user", content: message } and
     //           { role:"assistant", content: reply } to history
     ```
+
+    ### ui_action values
+    | Value | What to render |
+    |-------|---------------|
+    | SHOW_CHAT | Normal chat bubble |
+    | SHOW_EMERGENCY | Red banner + 1990 call button |
+    | SHOW_SLOTS | Chat bubble + optional slot picker |
+    | SHOW_PATIENT_FORM | Chat bubble + name/phone form |
+    | SHOW_PAYMENT | Booking confirmation + payment trigger |
+    | SHOW_CANCELLED | Cancellation confirmation |
+    | SHOW_RESCHEDULED | Reschedule confirmation |
     """
     try:
         bs = req.booking_state
@@ -56,6 +64,7 @@ async def chat(req: ChatRequest):
             selected_doctor_name=bs.selected_doctor_name,
             appointment_id=bs.appointment_id,
             is_emergency=bs.is_emergency,
+            conversation_summary=bs.conversation_summary,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
