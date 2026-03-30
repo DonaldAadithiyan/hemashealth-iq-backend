@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import ChatRequest, ChatResponse, BookingState, stage_to_ui_action
 from app.agents.patient_agent import run_agent
+from app.utils.pii_vault import get_vault, clear_vault
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -10,50 +11,44 @@ async def chat(req: ChatRequest):
     """
     ## POST /chat — Patient-facing AI endpoint
 
-    Send a patient message, get a reply + UI instruction back.
+    PII Safety:
+    - A per-session PIIVault is created on first message using session_id.
+    - All real patient IDs, appointment IDs, phone numbers are tokenised
+      before reaching the LLM. The LLM only sees tokens like :::patient_id_1:::
+    - Tokens are unmasked at tool-call time (in-memory only, never logged).
+    - The final reply is unmasked so the patient sees their real information.
+    - Conversation history stored on the frontend only contains tokens.
 
-    ### Context optimization
-    History is automatically compressed after 6 turns using a summarizer (gpt-4o-mini).
-    The last 4 turns are always kept verbatim. The summary is stored in `state.conversation_summary`
-    and must be sent back on every request inside `booking_state` — the frontend does not need to
-    understand it, just store and return it.
+    Context optimisation:
+    - History is summarised after 6 turns using gpt-4o-mini.
+    - Last 4 turns always kept verbatim.
+    - Summary stored in booking_state.conversation_summary.
 
-    ### How to use from Next.js
+    Usage from Next.js:
     ```ts
     const res = await fetch("/chat", {
       method: "POST",
       body: JSON.stringify({
-        session_id,      // uuid — generate once per conversation
-        message,         // patient's latest message
-        history,         // full conversation so far
-        booking_state,   // send back exactly what the last response returned
+        session_id,      // uuid — generate once per conversation, keep for vault lookup
+        message,
+        history,
+        booking_state,   // send back exactly what last response returned
       })
     })
     const { reply, ui_action, state } = await res.json()
-
-    // 1. Display reply as assistant chat bubble
-    // 2. Switch on ui_action to render the right component
-    // 3. Save state as booking_state for next request
-    // 4. Append { role:"user", content: message } and
-    //           { role:"assistant", content: reply } to history
+    // Switch on ui_action to decide what component to render
+    // Store state as booking_state for next request
     ```
-
-    ### ui_action values
-    | Value | What to render |
-    |-------|---------------|
-    | SHOW_CHAT | Normal chat bubble |
-    | SHOW_EMERGENCY | Red banner + 1990 call button |
-    | SHOW_SLOTS | Chat bubble + optional slot picker |
-    | SHOW_PATIENT_FORM | Chat bubble + name/phone form |
-    | SHOW_PAYMENT | Booking confirmation + payment trigger |
-    | SHOW_CANCELLED | Cancellation confirmation |
-    | SHOW_RESCHEDULED | Reschedule confirmation |
     """
     try:
-        bs = req.booking_state
+        # Get or create the PII vault for this session
+        vault = get_vault(req.session_id)
+
+        bs     = req.booking_state
         result = await run_agent(
             new_message=req.message,
             history=req.history,
+            vault=vault,
             patient_id=bs.patient_id,
             preferred_location=bs.preferred_location,
             current_stage=bs.stage,
@@ -70,6 +65,10 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     new_state = BookingState(**result["state"])
+
+    # Clear vault once booking is fully confirmed — no more PII needed for this session
+    if new_state.stage == "confirmed":
+        clear_vault(req.session_id)
 
     return ChatResponse(
         session_id=req.session_id,

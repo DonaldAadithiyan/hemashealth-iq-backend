@@ -1,17 +1,22 @@
 """
 HemasHealth IQ — LangGraph Booking Graph
 
-Flow per turn:
-  agent → tools → agent → ... → END
-  Always ends with one AI reply to the patient.
+PII Safety:
+  Every tool call goes through the vault:
+    1. agent_node    → LLM only sees tokens (:::patient_id_1:::)
+    2. tools_node    → vault unmasks tokens → real values → DB
+    3. tools_node    → vault masks real values in response → tokens → LLM
 
-Each node prints what it's doing so you can follow along in the terminal.
+  The LLM never sees a real UUID, phone number, or patient name.
+  Real values only exist at tool-call time, in memory, never logged.
 """
 
 import json
 from typing import Annotated, TypedDict, Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages import (
+    BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
+)
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -23,6 +28,7 @@ from app.tools.routing import route_to_specialist
 from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
 from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
+from app.utils.pii_vault import PIIVault
 
 ALL_TOOLS = [
     route_to_specialist,
@@ -34,31 +40,31 @@ ALL_TOOLS = [
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
-R  = "\033[0m"
-BOLD   = "\033[1m"
-DIM    = "\033[2m"
-CYAN   = "\033[96m"
-GREEN  = "\033[92m"
-YELLOW = "\033[93m"
-MAGENTA= "\033[95m"
-RED    = "\033[91m"
-BLUE   = "\033[94m"
+R       = "\033[0m"
+BOLD    = "\033[1m"
+DIM     = "\033[2m"
+CYAN    = "\033[96m"
+GREEN   = "\033[92m"
+YELLOW  = "\033[93m"
+MAGENTA = "\033[95m"
+RED     = "\033[91m"
+BLUE    = "\033[94m"
 
 TOOL_COLOURS = {
-    "route_to_specialist":     MAGENTA,
-    "check_availability":      BLUE,
-    "lookup_or_create_patient":YELLOW,
-    "book_appointment":        GREEN,
-    "cancel_appointment":      RED,
-    "reschedule_appointment":  YELLOW,
+    "route_to_specialist":      MAGENTA,
+    "check_availability":       BLUE,
+    "lookup_or_create_patient": YELLOW,
+    "book_appointment":         GREEN,
+    "cancel_appointment":       RED,
+    "reschedule_appointment":   CYAN,
 }
 
 def _log_node(name: str, colour: str = CYAN):
-    print(f"\n{DIM}┌─ NODE: {colour}{BOLD}{name}{R}{DIM} {'─' * (40 - len(name))}┐{R}")
+    print(f"\n{DIM}┌─ NODE: {colour}{BOLD}{name}{R}{DIM} {'─'*(40-len(name))}┐{R}")
 
 def _log_tool_call(tool_name: str, args: dict):
     c = TOOL_COLOURS.get(tool_name, CYAN)
-    print(f"{DIM}│  🔧 TOOL CALL → {c}{BOLD}{tool_name}{R}")
+    print(f"{DIM}│  🔧 TOOL CALL  → {c}{BOLD}{tool_name}{R}")
     for k, v in args.items():
         print(f"{DIM}│     {k}: {c}{v}{R}")
 
@@ -68,28 +74,33 @@ def _log_tool_result(tool_name: str, result: dict):
     for k, v in result.items():
         print(f"{DIM}│     {k}: {v}{R}")
 
+def _log_pii(action: str, count: int):
+    colour = YELLOW if action == "masked" else GREEN
+    print(f"{DIM}│  🔒 PII {action}: {colour}{count} value(s){R}")
+
 def _log_stage(old: str, new: str):
     if old != new:
         print(f"{DIM}│  📍 STAGE: {YELLOW}{old}{R}{DIM} → {GREEN}{new}{R}")
 
 def _log_node_end():
-    print(f"{DIM}└{'─' * 50}┘{R}")
+    print(f"{DIM}└{'─'*50}┘{R}")
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    stage: str
-    is_emergency: bool
-    detected_specialty: str | None
-    preferred_location: str | None
-    selected_slot_id: str | None
+    messages:               Annotated[list[BaseMessage], add_messages]
+    stage:                  str
+    is_emergency:           bool
+    detected_specialty:     str | None
+    preferred_location:     str | None
+    selected_slot_id:       str | None
     selected_slot_datetime: str | None
-    selected_doctor_id: str | None
-    selected_doctor_name: str | None
-    patient_id: str | None
-    appointment_id: str | None
+    selected_doctor_id:     str | None
+    selected_doctor_name:   str | None
+    patient_id:             str | None
+    appointment_id:         str | None
+    vault:                  PIIVault      # ← injected per session, never serialised
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,59 +124,114 @@ def build_graph():
         api_key=settings.openai_api_key,
     ).bind_tools(ALL_TOOLS)
 
-    tool_node = ToolNode(ALL_TOOLS)
+    raw_tool_node = ToolNode(ALL_TOOLS)
 
     # ── Agent node ────────────────────────────────────────────────────────────
 
     def agent_node(state: AgentState) -> dict:
+        """LLM sees only tokens — no real PII ever reaches this node."""
         _log_node("AGENT", CYAN)
         print(f"{DIM}│  💬 Messages in context: {len(state['messages'])}{R}")
-        print(f"{DIM}│  📍 Current stage: {YELLOW}{state.get('stage', 'intake')}{R}")
+        print(f"{DIM}│  📍 Stage: {YELLOW}{state.get('stage', 'intake')}{R}")
+        print(f"{DIM}│  🔒 Vault tokens registered: {state['vault'].debug_summary()['total_tokens']}{R}")
 
         response = llm.invoke([SystemMessage(content=SYSTEM_PROMPT)] + state["messages"])
 
-        # Log what the LLM decided to do
         if hasattr(response, "tool_calls") and response.tool_calls:
             for tc in response.tool_calls:
                 _log_tool_call(tc["name"], tc.get("args", {}))
         else:
             preview = str(response.content)[:80].replace("\n", " ")
-            print(f"{DIM}│  💬 Reply: \"{preview}...\"{R}")
+            print(f"{DIM}│  💬 Reply preview: \"{preview}...\"{R}")
 
         _log_node_end()
         return {"messages": [response]}
 
-    # ── Tools node ────────────────────────────────────────────────────────────
+    # ── Tools node — unmask in, mask out ─────────────────────────────────────
 
     def tools_node(state: AgentState) -> dict:
+        """
+        PII safety layer:
+          1. Unmask token args → real values before tool execution
+          2. Execute tool against DB
+          3. Mask real values in response → tokens before returning to LLM
+        """
         _log_node("TOOLS", MAGENTA)
-
+        vault     = state["vault"]
         old_stage = state.get("stage", "intake")
-        result = tool_node.invoke(state)
-        tool_messages: list[ToolMessage] = result.get("messages", [])
         extra: dict[str, Any] = {}
+
+        # Get the last AI message which contains the tool calls
+        last_ai_msg = state["messages"][-1]
+
+        # ── Step 1: Unmask tool call args ─────────────────────────────────────
+        if hasattr(last_ai_msg, "tool_calls") and last_ai_msg.tool_calls:
+            unmasked_tool_calls = []
+            total_unmasked = 0
+            for tc in last_ai_msg.tool_calls:
+                original_args = tc.get("args", {})
+                real_args     = vault.unmask_dict(original_args)
+                unmasked_count = sum(
+                    1 for k, v in real_args.items()
+                    if v != original_args.get(k)
+                )
+                total_unmasked += unmasked_count
+                unmasked_tool_calls.append({**tc, "args": real_args})
+
+            if total_unmasked:
+                _log_pii("unmasked", total_unmasked)
+
+            # Rebuild last message with real args so tool_node executes correctly
+            from langchain_core.messages import AIMessage as _AI
+            real_ai_msg = _AI(
+                content    = last_ai_msg.content,
+                tool_calls = unmasked_tool_calls,
+            )
+            # Temporarily swap the last message
+            patched_messages = list(state["messages"][:-1]) + [real_ai_msg]
+            patched_state    = {**state, "messages": patched_messages}
+        else:
+            patched_state = state
+
+        # ── Step 2: Execute tools with real values ────────────────────────────
+        result        = raw_tool_node.invoke(patched_state)
+        tool_messages = result.get("messages", [])
+
+        # ── Step 3: Mask real values in tool responses ────────────────────────
+        safe_tool_messages = []
+        total_masked = 0
 
         for msg in tool_messages:
             if not isinstance(msg, ToolMessage):
+                safe_tool_messages.append(msg)
                 continue
+
             data = _parse_tool_msg(msg)
+            if not data:
+                safe_tool_messages.append(msg)
+                continue
+
             name = getattr(msg, "name", "")
             _log_tool_result(name, data)
 
+            # Extract state updates from REAL data before masking
             if name == "route_to_specialist":
-                specialty    = data.get("specialty")
-                is_emergency = data.get("is_emergency", False)
-                extra["detected_specialty"] = specialty
-                extra["is_emergency"]        = is_emergency
-                extra["stage"]               = "emergency" if is_emergency else "routing"
+                extra["detected_specialty"] = data.get("specialty")
+                extra["is_emergency"]       = data.get("is_emergency", False)
+                extra["stage"]              = "emergency" if data.get("is_emergency") else "routing"
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
 
             elif name == "lookup_or_create_patient":
                 if data.get("patient_id"):
+                    # Store real patient_id in state (state is server-side only)
                     extra["patient_id"] = data["patient_id"]
                     extra["stage"]      = "collecting"
+                    # Register in vault
+                    vault.register("patient_id",   data["patient_id"])
+                    vault.register("patient_name", data.get("name", ""))
+                    vault.register("phone",        data.get("phone", ""))
 
             elif name == "book_appointment":
                 if data.get("status") == "confirmed":
@@ -173,8 +239,7 @@ def build_graph():
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["selected_slot_datetime"] = data.get("slot_datetime")
                     extra["stage"]                  = "confirmed"
-                else:
-                    print(f"{DIM}│  ⚠️  booking FAILED: {data.get('error')}{R}")
+                    vault.register("appointment_id", data.get("appointment_id", ""))
 
             elif name == "cancel_appointment":
                 if data.get("success"):
@@ -186,20 +251,39 @@ def build_graph():
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
 
+            # Mask real values in response before LLM sees it
+            safe_data    = vault.mask_dict(data)
+            masked_count = sum(
+                1 for k in safe_data
+                if safe_data[k] != data.get(k)
+            )
+            total_masked += masked_count
+
+            # Rebuild ToolMessage with masked content
+            safe_msg = ToolMessage(
+                content   = json.dumps(safe_data),
+                tool_call_id = msg.tool_call_id,
+                name      = name,
+            )
+            safe_tool_messages.append(safe_msg)
+
+        if total_masked:
+            _log_pii("masked", total_masked)
+
         new_stage = extra.get("stage", old_stage)
         _log_stage(old_stage, new_stage)
         _log_node_end()
 
-        return {"messages": tool_messages, **extra}
+        return {"messages": safe_tool_messages, **extra}
 
     # ── Router ────────────────────────────────────────────────────────────────
 
     def should_continue(state: AgentState) -> str:
         last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
-            print(f"{DIM}  ↪ routing to TOOLS{R}")
+            print(f"{DIM}  ↪ routing → TOOLS{R}")
             return "tools"
-        print(f"{DIM}  ↪ routing to END (reply ready){R}")
+        print(f"{DIM}  ↪ routing → END{R}")
         return END
 
     # ── Assemble ──────────────────────────────────────────────────────────────
