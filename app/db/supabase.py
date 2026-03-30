@@ -154,14 +154,22 @@ def get_available_slots(
             booked_datetimes.add(dt)
 
         # 4. Walk each day in range, check rules
+        # ── Timezone handling ──────────────────────────────────────────────
+        # Rules are stored in Asia/Colombo (UTC+5:30).
+        # We walk in UTC but convert to local time for hour comparisons
+        # so that "09:00–17:00 Colombo" works correctly.
+        from zoneinfo import ZoneInfo
+        colombo_tz = ZoneInfo("Asia/Colombo")
+
         current = start_dt.replace(minute=0, second=0, microsecond=0)
-        # Round up to next hour
         if current < now:
             current = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
 
         while current <= end_dt:
-            day_str  = current.date().isoformat()    # "2026-03-27"
-            weekday  = _weekday_number(current)      # 1=Mon ... 7=Sun
+            # Convert UTC current time to Colombo local for rule matching
+            current_local = current.astimezone(colombo_tz)
+            day_str  = current_local.date().isoformat()   # date in local time
+            weekday  = current_local.isoweekday()         # 1=Mon ... 7=Sun in local time
 
             if day_str not in exception_dates:
                 for rule in rules:
@@ -177,20 +185,20 @@ def get_available_slots(
                     if eff_to and day_str > eff_to:
                         continue
 
-                    # Generate hourly slots within rule start/end times
+                    # Compare local hour against rule start/end
                     rule_start_h = int(rule["start_time"][:2])
                     rule_end_h   = int(rule["end_time"][:2])
-                    slot_h       = current.hour
+                    slot_h       = current_local.hour
 
                     if rule_start_h <= slot_h < rule_end_h:
-                        slot_key = current.strftime("%Y-%m-%dT%H:%M")
+                        # Use local datetime string as the slot key for readability
+                        slot_key     = current_local.strftime("%Y-%m-%dT%H:%M")
                         if slot_key not in booked_datetimes:
-                            # Synthetic slot_id: "doctor_id::datetime"
                             synthetic_id = f"{doctor_id}::{slot_key}"
                             all_slots.append({
-                                "doctor_id":    doctor_id,
-                                "slot_id":      synthetic_id,
-                                "slot_datetime": current.isoformat(),
+                                "doctor_id":     doctor_id,
+                                "slot_id":       synthetic_id,
+                                "slot_datetime": current_local.isoformat(),
                             })
 
             current += timedelta(hours=1)

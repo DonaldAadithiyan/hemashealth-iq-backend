@@ -59,6 +59,7 @@ def banner():
     print(f"{DIM}  Commands:{R}")
     print(f"{DIM}  • {WHITE}state{DIM}  → booking state + PII vault contents{R}")
     print(f"{DIM}  • {WHITE}reset{DIM}  → new conversation (vault cleared){R}")
+    print(f"{DIM}  • {WHITE}debug{DIM}  → test Supabase connection directly{R}")
     print(f"{DIM}  • {WHITE}quit{DIM}   → exit{R}")
     print(f"{BOLD}{CYAN}{'─'*60}{R}\n")
 
@@ -191,6 +192,40 @@ async def main():
 
         if cmd == "state":
             print_state(booking_state, vault)
+            continue
+
+        if cmd == "debug":
+            print(f"\n{BOLD}{BLUE}{'─'*55}{R}")
+            print(f"{BOLD}{BLUE}  🔬 DB Debug — checking Supabase directly{R}")
+            print(f"{BOLD}{BLUE}{'─'*55}{R}")
+            try:
+                from app.db.supabase import get_doctors, get_available_slots
+                from datetime import datetime, timezone, timedelta
+                for spec in ["General Medicine", "Cardiology", "Neurology"]:
+                    for loc in ["wattala", "thalawathugoda"]:
+                        docs = get_doctors(specialty=spec, location=loc)
+                        if docs:
+                            now   = datetime.now(timezone.utc)
+                            slots = get_available_slots(
+                                [d["id"] for d in docs],
+                                after=now.isoformat(),
+                                before=(now + timedelta(days=7)).isoformat()
+                            )
+                            slot_count = len(slots)
+                            status = f"{GREEN}✅{R}" if slot_count > 0 else f"{RED}⚠️  0 slots{R}"
+                            print(f"  {status} {DIM}{spec}/{loc}: {len(docs)} doctor(s), {slot_count} slot(s){R}")
+                        else:
+                            print(f"  {DIM}❌ {spec}/{loc}: no doctors{R}")
+                # Check raw rules
+                from app.db.supabase import get_supabase
+                sb = get_supabase()
+                rules = sb.table("doctor_availability_rules").select("doctor_id, days_of_week, start_time, end_time, is_active").limit(3).execute()
+                print(f"\n  {DIM}Sample rules: {rules.data}{R}")
+            except Exception as e:
+                print(f"  {RED}Error: {e}{R}")
+                import traceback
+                traceback.print_exc()
+            print(f"{BOLD}{BLUE}{'─'*55}{R}\n")
             continue
 
         if cmd == "reset":

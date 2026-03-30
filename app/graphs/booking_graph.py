@@ -194,10 +194,39 @@ def build_graph():
             patched_state = state
 
         # ── Step 2: Execute tools with real values ────────────────────────────
-        result        = raw_tool_node.invoke(patched_state)
-        tool_messages = result.get("messages", [])
+        try:
+            result        = raw_tool_node.invoke(patched_state)
+            tool_messages = result.get("messages", [])
+        except Exception as tool_err:
+            print(f"{RED}│  ❌ TOOL EXECUTION ERROR: {tool_err}{R}")
+            import traceback
+            traceback.print_exc()
+            # Return an error ToolMessage so the LLM can handle it gracefully
+            from langchain_core.messages import ToolMessage as _TM
+            error_messages = []
+            if hasattr(last_ai_msg, "tool_calls"):
+                for tc in last_ai_msg.tool_calls:
+                    error_messages.append(_TM(
+                        content=f'{{"error": "Tool execution failed: {str(tool_err)[:200]}"}}',
+                        tool_call_id=tc.get("id", "unknown"),
+                        name=tc.get("name", "unknown"),
+                    ))
+            _log_node_end()
+            return {"messages": error_messages}
 
         # ── Step 3: Mask real values in tool responses ────────────────────────
+        # Log raw tool messages first so we can see errors
+        if not tool_messages:
+            print(f"{RED}│  ⚠️  No tool messages returned — tool may have failed silently{R}")
+        for raw_msg in tool_messages:
+            if isinstance(raw_msg, ToolMessage):
+                raw_content = raw_msg.content[:300] if raw_msg.content else "(empty)"
+                # Check if it's an error message from ToolNode's internal error handling
+                if "error" in raw_content.lower() or "exception" in raw_content.lower() or "traceback" in raw_content.lower():
+                    print(f"{RED}│  ❌ TOOL ERROR [{getattr(raw_msg, 'name', '?')}]: {raw_content}{R}")
+                else:
+                    print(f"{DIM}│  📨 Tool message [{getattr(raw_msg, 'name', '?')}]: {raw_content[:120]}{R}")
+
         safe_tool_messages = []
         total_masked = 0
 
