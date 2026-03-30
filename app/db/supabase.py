@@ -76,8 +76,11 @@ def get_doctor(doctor_id: str) -> dict | None:
 
 # ── Availability (computed from rules) ───────────────────────────────────────
 
-def _weekday_name(d: datetime) -> str:
-    return d.strftime("%A").lower()   # "monday", "tuesday", ...
+def _weekday_number(d: datetime) -> int:
+    """Return ISO weekday as smallint: Monday=1 ... Sunday=7.
+    Matches your doctor_availability_rules.days_of_week smallint[] column.
+    """
+    return d.isoweekday()   # Monday=1, Tuesday=2, ..., Sunday=7
 
 
 def get_available_slots(
@@ -158,11 +161,11 @@ def get_available_slots(
 
         while current <= end_dt:
             day_str  = current.date().isoformat()    # "2026-03-27"
-            weekday  = _weekday_name(current)        # "monday"
+            weekday  = _weekday_number(current)      # 1=Mon ... 7=Sun
 
             if day_str not in exception_dates:
                 for rule in rules:
-                    days = [d.lower() for d in rule["days_of_week"]]
+                    days = [int(d) for d in rule["days_of_week"]]
                     if weekday not in days:
                         continue
 
