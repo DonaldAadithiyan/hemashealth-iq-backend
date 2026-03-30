@@ -53,17 +53,18 @@ def get_doctors(
 
 
 def get_doctor(doctor_id: str) -> dict | None:
-    sb  = get_supabase()
-    row = (
+    sb   = get_supabase()
+    resp = (
         sb.table("doctors")
         .select("id, doctor_name, specialization, location, is_available, consultation_fee")
         .eq("id", doctor_id)
-        .maybe_single()
+        .limit(1)
         .execute()
-        .data
     )
-    if not row:
+    rows = resp.data or []
+    if not rows:
         return None
+    row = rows[0]
     return {
         "id":               row["id"],
         "name":             row["doctor_name"],
@@ -228,17 +229,30 @@ def find_patient_by_phone(phone: str) -> dict | None:
     sb    = get_supabase()
     phone = phone.strip().replace(" ", "")
 
-    # Find user by phone
-    user_resp = (
-        sb.table("users")
-        .select("id, full_name, email, phone")
-        .eq("phone", phone)
-        .eq("role", "patient")
-        .eq("is_active", True)
-        .maybe_single()
-        .execute()
-    )
-    user = user_resp.data
+    # Try with and without country code prefix
+    # e.g. "0773609683" and "+94773609683" should both match
+    phone_variants = [phone]
+    if phone.startswith("0"):
+        phone_variants.append("+94" + phone[1:])
+    elif phone.startswith("+94"):
+        phone_variants.append("0" + phone[3:])
+
+    user = None
+    for ph in phone_variants:
+        user_resp = (
+            sb.table("users")
+            .select("id, full_name, email, phone")
+            .eq("phone", ph)
+            .eq("role", "patient")
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = user_resp.data or []
+        if rows:
+            user = rows[0]
+            break
+
     if not user:
         return None
 
@@ -247,12 +261,13 @@ def find_patient_by_phone(phone: str) -> dict | None:
         sb.table("patients")
         .select("id, user_id")
         .eq("user_id", user["id"])
-        .maybe_single()
+        .limit(1)
         .execute()
     )
-    patient = patient_resp.data
-    if not patient:
+    patient_rows = patient_resp.data or []
+    if not patient_rows:
         return None
+    patient = patient_rows[0]
 
     return {
         "id":      patient["id"],
@@ -340,16 +355,16 @@ def create_appointment(
 
 
 def get_appointment(appointment_id: str) -> dict | None:
-    sb  = get_supabase()
-    row = (
+    sb   = get_supabase()
+    resp = (
         sb.table("appointments")
         .select("*")
         .eq("id", appointment_id)
-        .maybe_single()
+        .limit(1)
         .execute()
-        .data
     )
-    return row
+    rows = resp.data or []
+    return rows[0] if rows else None
 
 
 def get_appointments_for_patient(patient_id: str, status: str | None = None) -> list[dict]:

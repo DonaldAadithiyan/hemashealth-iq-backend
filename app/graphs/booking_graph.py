@@ -221,11 +221,20 @@ def build_graph():
         for raw_msg in tool_messages:
             if isinstance(raw_msg, ToolMessage):
                 raw_content = raw_msg.content[:300] if raw_msg.content else "(empty)"
-                # Check if it's an error message from ToolNode's internal error handling
-                if "error" in raw_content.lower() or "exception" in raw_content.lower() or "traceback" in raw_content.lower():
+                # Only flag as error if it contains an actual exception/traceback
+                # (not just a field named "error" in a successful response)
+                is_error = (
+                    "exception" in raw_content.lower()
+                    or "traceback" in raw_content.lower()
+                    or "attributeerror" in raw_content.lower()
+                    or "typeerror" in raw_content.lower()
+                    or "supabaseexception" in raw_content.lower()
+                    or raw_content.strip().startswith("Error:")
+                )
+                if is_error:
                     print(f"{RED}│  ❌ TOOL ERROR [{getattr(raw_msg, 'name', '?')}]: {raw_content}{R}")
                 else:
-                    print(f"{DIM}│  📨 Tool message [{getattr(raw_msg, 'name', '?')}]: {raw_content[:120]}{R}")
+                    print(f"{DIM}│  📨 Tool response [{getattr(raw_msg, 'name', '?')}]: {raw_content[:120]}{R}")
 
         safe_tool_messages = []
         total_masked = 0
