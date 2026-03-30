@@ -9,11 +9,13 @@ FastAPI + LangGraph backend powering the HemasHealth IQ conversational patient e
 This is the **AI brain only**. It handles:
 
 - Conversational patient intake via a LangGraph agent (GPT-4o)
-- Symptom analysis and specialist routing
-- Real-time doctor availability checking
+- Symptom and disease name → specialist routing (170+ keywords)
+- Real-time doctor availability computed from `doctor_availability_rules`
+- Automatic fallback to related specialties when a doctor isn't available
 - Appointment booking, cancellation, and rescheduling
 - Returning patient detection by phone number
-- Emergency detection with immediate escalation
+- PII token substitution — real patient IDs/names never reach the LLM
+- Conversation summarisation after 6 turns (gpt-4o-mini) to keep context lean
 - Dashboard data endpoints for Admin, Doctor, and Patient views
 
 What it does **not** do (handled by Next.js):
@@ -29,43 +31,47 @@ What it does **not** do (handled by Next.js):
 ```
 hemashealth-iq-backend/
 │
-├── chat.py                          ← Interactive terminal chat for local testing
+├── chat.py                              ← Interactive terminal chat for local testing
+├── seed_data.sql                        ← Sample data — run in Supabase SQL editor
 │
 ├── app/
-│   ├── main.py                      ← FastAPI app entry point + CORS
-│   ├── config.py                    ← Environment settings (pydantic-settings)
+│   ├── main.py                          ← FastAPI app entry point + CORS
+│   ├── config.py                        ← Environment settings (pydantic-settings)
 │   │
 │   ├── agents/
-│   │   └── patient_agent.py         ← Runs one conversation turn through the graph
+│   │   └── patient_agent.py             ← Runs one turn: masks PII, invokes graph, unmasks reply
 │   │
 │   ├── graphs/
-│   │   └── booking_graph.py         ← LangGraph state machine (the AI brain)
+│   │   └── booking_graph.py             ← LangGraph state machine + PII vault interception
 │   │
 │   ├── tools/
-│   │   ├── routing.py               ← Symptom → specialist routing + emergency detection
-│   │   ├── availability.py          ← Check doctor slots by specialty + location
-│   │   ├── patient.py               ← Lookup or register patient by phone
-│   │   └── booking.py               ← Book / cancel appointments with slot locking
+│   │   ├── routing.py                   ← Symptom/disease → specialist + emergency detection
+│   │   ├── availability.py              ← Doctor slots with 4-level fallback chain
+│   │   ├── patient.py                   ← Lookup or register patient by phone
+│   │   └── booking.py                   ← Book / cancel / reschedule appointments
 │   │
 │   ├── routers/
-│   │   ├── chat.py                  ← POST /chat (main AI endpoint)
-│   │   └── appointments.py          ← GET/DELETE /appointments/* (dashboard endpoints)
+│   │   ├── chat.py                      ← POST /chat (main AI endpoint)
+│   │   └── appointments.py              ← GET/PATCH/DELETE /appointments/* (dashboards)
 │   │
 │   ├── models/
-│   │   └── schemas.py               ← All Pydantic models including UIAction enum
+│   │   └── schemas.py                   ← All Pydantic models + UIAction enum
 │   │
 │   ├── db/
-│   │   ├── mock_db.py               ← ✅ ACTIVE — in-memory data (15 doctors, slots, patients)
-│   │   └── supabase.py              ← Ready to activate when real DB is set up
+│   │   ├── mock_db.py                   ← In-memory data for local dev (no Supabase needed)
+│   │   └── supabase.py                  ← Real Supabase queries against your schema
 │   │
-│   └── prompts/
-│       └── system_prompt.py         ← Master LLM system prompt (8-step booking flow)
+│   ├── prompts/
+│   │   └── system_prompt.py             ← Master LLM system prompt (8-step booking flow)
+│   │
+│   └── utils/
+│       ├── pii_vault.py                 ← PII token substitution vault (per session)
+│       └── summarizer.py               ← Conversation summariser (gpt-4o-mini)
 │
 ├── tests/
-│   └── test_chat.py
+│   └── test_all.py                      ← 80 tests, no OpenAI or Supabase needed
 │
-├── supabase_schema.sql              ← Run in Supabase SQL editor when DB is ready
-├── render.yaml                      ← One-click deploy to Render
+├── render.yaml                          ← One-click deploy to Render
 ├── requirements.txt
 └── .env.example
 ```
@@ -95,29 +101,59 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
-Open `.env` and add your OpenAI API key. That is the only required field to run locally.
+
+Minimum required to run locally with mock data:
 ```
 OPENAI_API_KEY=sk-...
+```
+
+Add these when connecting to Supabase:
+```
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...   # service_role key from Supabase → Settings → API
 ```
 
 ---
 
 ## Running Locally
 
-### Terminal chat (test the AI directly, no server needed)
+### Terminal chat (test the AI, no server needed)
 ```bash
 python chat.py
 ```
-Commands while chatting:
-- `state` — print the current booking state
-- `reset` — start a fresh conversation
-- `quit` — exit
+
+**Terminal commands:**
+| Command | What it does |
+|---------|-------------|
+| `state` | Show booking state + PII vault contents |
+| `reset` | Start a fresh conversation (vault cleared) |
+| `quit`  | Exit |
 
 ### API server
 ```bash
 uvicorn app.main:app --reload
 ```
-Open **http://localhost:8000/docs** for the interactive Swagger UI.
+Open **http://localhost:8000/docs** for the Swagger UI.
+
+### Run tests
+```bash
+python tests/test_all.py
+```
+80 tests, no OpenAI or Supabase needed. Runs in under 2 seconds.
+
+---
+
+## Seeding your Supabase DB
+
+Run `seed_data.sql` in your Supabase SQL editor. It inserts:
+- 15 doctors across both locations and all specialties
+- Availability rules (Mon–Fri, 9am–5pm) for all doctors
+- 3 sample patients for testing the returning patient flow
+
+**Test phone numbers (returning patient flow):**
+- `+94771234567` — Kamal Jayawardena
+- `+94779876543` — Nimali Perera
+- `+94761122334` — Suresh Silva
 
 ---
 
@@ -132,7 +168,7 @@ Main patient-facing AI endpoint. Every patient message goes here.
   "session_id": "uuid-generated-by-frontend",
   "message": "I have been having bad headaches",
   "history": [
-    { "role": "user", "content": "Hello" },
+    { "role": "user",      "content": "Hello" },
     { "role": "assistant", "content": "Hello! How can I help you today?" }
   ],
   "booking_state": {
@@ -145,7 +181,8 @@ Main patient-facing AI endpoint. Every patient message goes here.
     "selected_doctor_id": null,
     "selected_doctor_name": null,
     "patient_id": null,
-    "appointment_id": null
+    "appointment_id": null,
+    "conversation_summary": null
   }
 }
 ```
@@ -166,7 +203,8 @@ Main patient-facing AI endpoint. Every patient message goes here.
     "selected_doctor_id": null,
     "selected_doctor_name": null,
     "patient_id": null,
-    "appointment_id": null
+    "appointment_id": null,
+    "conversation_summary": null
   }
 }
 ```
@@ -175,10 +213,11 @@ Main patient-facing AI endpoint. Every patient message goes here.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/appointments/{id}` | Single appointment |
-| GET | `/appointments/patient/{patient_id}` | All appointments for a patient |
-| GET | `/appointments/doctor/{doctor_id}?date=YYYY-MM-DD` | Doctor's appointments for a day |
-| GET | `/appointments/admin/all?location=wattala&status=confirmed` | All appointments (admin) |
+| GET    | `/appointments/{id}` | Single appointment |
+| GET    | `/appointments/patient/{patient_id}` | Patient's appointments |
+| GET    | `/appointments/doctor/{doctor_id}?date=YYYY-MM-DD` | Doctor's appointments for a day |
+| GET    | `/appointments/admin/all?location=wattala&status=confirmed` | All appointments |
+| PATCH  | `/appointments/{id}/reschedule` | Reschedule an appointment |
 | DELETE | `/appointments/{id}` | Cancel an appointment |
 
 ### `GET /health`
@@ -188,147 +227,158 @@ Main patient-facing AI endpoint. Every patient message goes here.
 
 ---
 
-## How the Chat Works
+## UIAction — What the Frontend Should Render
 
-### Context sent to LLM each turn
+Every `/chat` response includes a `ui_action` field. Switch on this to decide which component to show alongside the chat bubble.
 
-Every request sends the full conversation to GPT-4o:
-
-```
-SystemMessage  ← master system prompt (booking rules, clinical boundary)
-HumanMessage   ← "Hello"
-AIMessage      ← "Hello! How can I help?"
-HumanMessage   ← "I have a tummy ache"
-AIMessage      ← tool call to route_to_specialist
-ToolMessage    ← { specialty: "Gastroenterology" }
-AIMessage      ← "I'll find you a Gastroenterologist. Which location?"
-HumanMessage   ← "Wattala"        ← new message this turn
-```
-
-The backend is **completely stateless**. The frontend must send full `history[]` and `booking_state` on every request.
-
-### Conversation flow
-
-```
-Patient message
-      ↓
-POST /chat
-      ↓
-LangGraph agent (GPT-4o)
-      ↓
-  ┌── calls tools as needed ──────────────────────────────┐
-  │  route_to_specialist   → symptom → specialty          │
-  │  check_availability    → doctors + free slots         │
-  │  lookup_or_create_patient → find or register patient  │
-  │  book_appointment      → lock slot + create record    │
-  │  cancel_appointment    → free slot + update record    │
-  └───────────────────────────────────────────────────────┘
-      ↓
-reply + ui_action + state
-      ↓
-Next.js renders response
-```
-
-### Booking flow (8 steps)
-
-1. Patient describes symptoms
-2. Agent announces specialist
-3. Agent asks which hospital (Wattala or Thalawathugoda)
-4. Agent shows available doctor slots
-5. Patient picks a slot
-6. Agent checks if returning patient by phone number
-7. Agent books the appointment
-8. Confirmation message with appointment ID
-
----
-
-## UIAction — How the Frontend Knows What to Render
-
-Every `/chat` response includes a `ui_action` field. The frontend switches on this to decide what component to show alongside the chat bubble.
-
-| `ui_action` | When | What to render |
-|-------------|------|----------------|
+| `ui_action` | When it fires | What to render |
+|-------------|--------------|----------------|
 | `SHOW_CHAT` | Normal conversation | Just the chat bubble |
 | `SHOW_EMERGENCY` | Red-flag symptoms detected | Red banner + 1990 call button |
 | `SHOW_SLOTS` | Doctor slots presented | Chat bubble + optional slot picker cards |
 | `SHOW_PATIENT_FORM` | Collecting patient details | Chat bubble + name/phone input form |
 | `SHOW_PAYMENT` | Appointment confirmed | Booking confirmation card + payment trigger |
 | `SHOW_CANCELLED` | Appointment cancelled | Cancellation confirmation card |
+| `SHOW_RESCHEDULED` | Appointment rescheduled | Reschedule confirmation card |
 
 `reply` is always displayed as the assistant chat bubble regardless of `ui_action`.
 
 ---
 
-## Data Layer
+## How the Chat Works
 
-Currently using **in-memory mock data** (`app/db/mock_db.py`):
-- 15 doctors across both locations and all specialties
-- Hourly slots 9am–4pm for the next 7 days for every doctor
-- 2 seed patients (Kamal Jayawardena +94771234567, Nimali Perera +94779876543)
+### Context sent to LLM each turn
 
-### Switching to Supabase (when DB is ready)
+```
+SystemMessage   ← master system prompt (booking rules, clinical guardrails)
+SystemMessage   ← conversation summary (if > 6 turns, replaces old messages)
+HumanMessage    ← "Hello"            ← recent history verbatim
+AIMessage       ← "How can I help?"
+HumanMessage    ← "I have migraines"
+AIMessage       ← "I'll find a Neurologist..."
+HumanMessage    ← "Wattala"          ← new message this turn (PII-masked)
+```
 
-1. Run `supabase_schema.sql` in your Supabase SQL editor
-2. Add `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` to `.env`
-3. In each of the 4 tool files, change:
-   ```python
-   from app.db.mock_db import get_db      # remove this
-   from app.db.supabase import get_supabase  # add this
-   ```
-   Then rewrite the `db.*` calls as Supabase queries. Return shapes are identical.
+The backend is **completely stateless**. Frontend sends full `history[]` and `booking_state` on every request.
+
+### Booking flow (8 steps)
+
+1. Patient describes symptoms or names a condition/disease
+2. Agent calls `route_to_specialist` → announces specialty
+3. Agent asks which hospital (Wattala or Thalawathugoda)
+4. Agent calls `check_availability` → shows doctor slots (with fallback if needed)
+5. Patient picks a slot
+6. Agent checks if returning patient by phone number
+7. Agent books the appointment
+8. Confirmation message with appointment ID
+
+### Specialist availability fallback (4 levels)
+
+When a specialty is unavailable, `check_availability` automatically tries:
+
+| Level | What is tried |
+|-------|--------------|
+| 1 | Exact match — requested specialty + requested location |
+| 2 | Related specialty — same location |
+| 3 | Same specialty — other location |
+| 4 | Related specialty — other location |
+
+The response includes `fallback_used` and `fallback_reason` so the agent can explain the recommendation to the patient warmly.
 
 ---
 
-## Supabase Schema (for when DB is ready)
+## PII Safety
 
-### `doctors`
-| Column | Type |
-|--------|------|
-| id | uuid |
-| name | text |
-| specialty | text |
-| location | text (`wattala` / `thalawathugoda`) |
-| is_active | bool |
+Implements the deterministic token-substitution pattern:
 
-### `doctor_slots`
-| Column | Type |
-|--------|------|
-| id | uuid |
-| doctor_id | uuid FK |
-| slot_datetime | timestamptz |
-| is_booked | bool |
+```
+Real value              → What the LLM sees
+────────────────────────────────────────────
+patient-uuid-abc-123    → :::patient_id_1:::
++94773609683            → :::phone_1:::
+appt-uuid-xyz-456       → :::appointment_id_1:::
+```
 
-### `patients`
-| Column | Type |
-|--------|------|
-| id | uuid |
-| name | text |
-| phone | text (unique) |
-| email | text |
-| created_at | timestamptz |
+- One `PIIVault` per session, stored server-side
+- Real values swapped to tokens before building LLM context
+- Tokens swapped back to real values at tool-call time (in-memory only, never logged)
+- Final reply unmasked before returning to patient
+- History on the frontend only ever contains tokens
+- Vault cleared when booking is confirmed
 
-### `appointments`
-| Column | Type |
-|--------|------|
-| id | uuid |
-| patient_id | uuid FK |
-| doctor_id | uuid FK |
-| slot_id | uuid FK |
-| status | text (`confirmed` / `cancelled` / `completed`) |
-| symptoms_summary | text |
-| created_at | timestamptz |
+---
+
+## Conversation Optimisation
+
+History is compressed after 6 turns using `gpt-4o-mini`:
+
+| History length | What the LLM receives |
+|---------------|----------------------|
+| ≤ 6 turns | Full history verbatim |
+| 7+ turns | Summary of old turns + last 4 turns verbatim |
+
+Summary accumulates across turns and is stored in `booking_state.conversation_summary`. Frontend stores and sends it back as-is — it never needs to read or understand it.
+
+---
+
+## Data Layer
+
+**Development (default):** `app/db/mock_db.py` — in-memory, no Supabase needed
+- 15 doctors, 840 slots, 2 seed patients
+- Only `OPENAI_API_KEY` required to run
+
+**Production:** `app/db/supabase.py` — queries your real Supabase schema
+- Availability computed from `doctor_availability_rules` + `doctor_availability_exceptions`
+- No pre-generated slots table needed
+- Slot IDs are synthetic: `"doctor-uuid::2026-03-27T10:00"`
+
+### Switching to Supabase
+Add to `.env`:
+```
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...
+```
+
+The tools already point to `app/db/supabase.py`. No code changes needed — just add the credentials.
+
+---
+
+## Supabase Schema (your real tables)
+
+| Table | Purpose |
+|-------|---------|
+| `users` | All users — doctors, patients, admins (phone/name/email live here) |
+| `doctors` | Doctor profiles — specialization, location, consultation_fee |
+| `doctor_availability_rules` | Recurring weekly schedules (days_of_week as smallint[]) |
+| `doctor_availability_exceptions` | One-off unavailable dates |
+| `patients` | Patient medical records (linked to users via user_id) |
+| `appointments` | Bookings — appointment_date, status, reason_for_visit |
+| `notifications` | Push/email notifications (not yet integrated) |
+
+**Status values for `appointments.status`:**
+`reserved` → `confirmed` → `paid` → `completed` / `cancelled` / `not_attended`
+
+---
+
+## Routing Coverage
+
+The symptom router covers 170+ keywords across all specialties plus:
+- Disease names: AIDS, HIV, tuberculosis, dengue, hepatitis, cancer, etc.
+- Medical abbreviations: IBS, UTI, COPD, PCOS, OCD, PTSD
+- Conditions: epilepsy, Parkinson's, arthritis, psoriasis, PCOS, glaucoma, lupus
+- Natural language: "my child has a fever" → Pediatrics, "I have depression" → General Medicine
+- Emergency detection: cannot breathe, heart attack, choking, overdose, anaphylactic shock
 
 ---
 
 ## Deployment (Render)
 
-```bash
-# render.yaml is already configured
-# Just connect your repo to Render and set environment variables:
-# OPENAI_API_KEY
-# SUPABASE_URL
-# SUPABASE_SERVICE_KEY
-# ALLOWED_ORIGINS (your Vercel URL)
+`render.yaml` is already configured. Connect your repo to Render and set:
+```
+OPENAI_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+ALLOWED_ORIGINS   # your Vercel URL
 ```
 
 ---
@@ -339,8 +389,10 @@ Currently using **in-memory mock data** (`app/db/mock_db.py`):
 |-------|-----------|
 | API Framework | FastAPI |
 | AI Orchestration | LangGraph |
-| LLM | GPT-4o (OpenAI) |
+| LLM (main) | GPT-4o (OpenAI) |
+| LLM (summariser) | GPT-4o-mini |
 | Database (prod) | Supabase (PostgreSQL) |
 | Database (dev) | In-memory mock |
+| PII Safety | Custom PIIVault (token substitution) |
 | Hosting | Render |
 | Frontend | Next.js (separate repo) |
