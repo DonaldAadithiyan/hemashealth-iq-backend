@@ -1,338 +1,429 @@
 """
-Symptom → Specialist routing tool.
+routing.py — Three-tier symptom → specialist routing tool.
 
-Rule-based keyword router. Returns:
-  - specialty: which specialist to route to
-  - is_emergency: whether this needs immediate A&E
-  - confidence: high (keyword matched) | low (fallback)
-  - mentions_medication: True if patient mentions current medications
-    → triggers drug interaction warning in the agent flow
+Tier 1 — DIRECT specialist
+  Patient names a known condition, a known disease, or explicitly requests
+  a specialist. Route straight to that specialist.
+  Examples: "I have diabetes", "I need a cardiologist", "I have epilepsy"
+
+Tier 2 — GP FIRST
+  Patient describes vague or acute symptoms without a known diagnosis.
+  Route to General Medicine. GP decides on referral.
+  Examples: "I have a headache", "stomach ache", "I feel tired"
+
+Tier 3 — CLARIFY
+  Too vague to route at all. Agent asks one targeted follow-up question.
+  Examples: "I feel sick", "something is wrong", "I'm not well"
 """
 
 from langchain_core.tools import tool
 
-ROUTING_TABLE: dict[str, str] = {
+# ── Tier 1: DIRECT specialist ─────────────────────────────────────────────────
+# Patient explicitly names a condition/disease, already has a diagnosis,
+# or explicitly requests a specific specialist.
 
-    # ── Cardiology ─────────────────────────────────────────────────────────
-    "chest pain":           "Cardiology",
-    "palpitations":         "Cardiology",
-    "heart":                "Cardiology",
-    "shortness of breath":  "Cardiology",
-    "high blood pressure":  "Cardiology",
-    "hypertension":         "Cardiology",
-    "arrhythmia":           "Cardiology",
-    "atrial fibrillation":  "Cardiology",
-    "angina":               "Cardiology",
-    "heart failure":        "Cardiology",
-    "coronary":             "Cardiology",
-    "cardiac":              "Cardiology",
-    "tachycardia":          "Cardiology",
-    "bradycardia":          "Cardiology",
-    "murmur":               "Cardiology",
-    "cholesterol":          "Cardiology",
+DIRECT_SPECIALIST: dict[str, str] = {
 
-    # ── Gastroenterology ───────────────────────────────────────────────────
-    "stomach":              "Gastroenterology",
-    "abdominal pain":       "Gastroenterology",
-    "nausea":               "Gastroenterology",
-    "vomiting":             "Gastroenterology",
-    "diarrhea":             "Gastroenterology",
-    "constipation":         "Gastroenterology",
-    "acid reflux":          "Gastroenterology",
-    "bloating":             "Gastroenterology",
-    "ibs":                  "Gastroenterology",
-    "irritable bowel":      "Gastroenterology",
-    "crohn":                "Gastroenterology",
-    "colitis":              "Gastroenterology",
-    "gastritis":            "Gastroenterology",
-    "ulcer":                "Gastroenterology",
-    "hepatitis":            "Gastroenterology",
-    "liver":                "Gastroenterology",
-    "gallstone":            "Gastroenterology",
-    "jaundice":             "Gastroenterology",
-    "indigestion":          "Gastroenterology",
-    "bowel":                "Gastroenterology",
-    "rectal":               "Gastroenterology",
-    "hemorrhoid":           "Gastroenterology",
-    "celiac":               "Gastroenterology",
-    "pancreatitis":         "Gastroenterology",
+    # Explicit specialist requests
+    "i need a cardiologist":     "Cardiology",
+    "i want a cardiologist":     "Cardiology",
+    "see a cardiologist":        "Cardiology",
+    "i need a neurologist":      "Neurology",
+    "i want a neurologist":      "Neurology",
+    "see a neurologist":         "Neurology",
+    "i need an orthopaedic":     "Orthopedics",
+    "i need orthopedic":         "Orthopedics",
+    "i need a gastro":           "Gastroenterology",
+    "i need a dermatologist":    "Dermatology",
+    "see a dermatologist":       "Dermatology",
+    "i need an ent":             "ENT",
+    "i need an eye doctor":      "Ophthalmology",
+    "i need an ophthalmologist": "Ophthalmology",
+    "i need an endocrinologist": "Endocrinology",
+    "i need a urologist":        "Urology",
+    "i need a gynaecologist":    "Obstetrics & Gynecology",
+    "i need a gynecologist":     "Obstetrics & Gynecology",
+    "i need a paediatrician":    "Pediatrics",
+    "i need a pediatrician":     "Pediatrics",
+    "referred to":               "General Medicine",
+    "my doctor referred":        "General Medicine",
+    "gp referred":               "General Medicine",
+    "referred by":               "General Medicine",
+    "specialist referral":       "General Medicine",
 
-    # ── Neurology ──────────────────────────────────────────────────────────
-    "headache":             "Neurology",
-    "migraine":             "Neurology",
-    "dizziness":            "Neurology",
-    "seizure":              "Neurology",
-    "epilepsy":             "Neurology",
-    "numbness":             "Neurology",
-    "memory loss":          "Neurology",
-    "stroke":               "Neurology",
-    "tremor":               "Neurology",
-    "parkinson":            "Neurology",
-    "alzheimer":            "Neurology",
-    "multiple sclerosis":   "Neurology",
-    "ms ":                  "Neurology",
-    "neuropathy":           "Neurology",
-    "vertigo":              "Neurology",
-    "concussion":           "Neurology",
-    "brain":                "Neurology",
-    "nerve":                "Neurology",
-    "paralysis":            "Neurology",
-    "facial droop":         "Neurology",
+    # Named cardiovascular conditions
+    "hypertension":              "Cardiology",
+    "atrial fibrillation":       "Cardiology",
+    "heart failure":             "Cardiology",
+    "coronary artery":           "Cardiology",
+    "arrhythmia":                "Cardiology",
+    "angina":                    "Cardiology",
+    "tachycardia":               "Cardiology",
+    "bradycardia":               "Cardiology",
+    "heart murmur":              "Cardiology",
+    "aortic":                    "Cardiology",
+    "myocardial":                "Cardiology",
 
-    # ── Orthopedics ────────────────────────────────────────────────────────
-    "back pain":            "Orthopedics",
-    "joint pain":           "Orthopedics",
-    "knee pain":            "Orthopedics",
-    "fracture":             "Orthopedics",
-    "bone":                 "Orthopedics",
-    "shoulder pain":        "Orthopedics",
-    "spine":                "Orthopedics",
-    "arthritis":            "Orthopedics",
-    "osteoporosis":         "Orthopedics",
-    "ligament":             "Orthopedics",
-    "tendon":               "Orthopedics",
-    "hip pain":             "Orthopedics",
-    "neck pain":            "Orthopedics",
-    "scoliosis":            "Orthopedics",
-    "slipped disc":         "Orthopedics",
-    "sports injury":        "Orthopedics",
-    "muscle pain":          "Orthopedics",
-    "rheumatoid":           "Orthopedics",
-    "gout":                 "Orthopedics",
-    "wrist pain":           "Orthopedics",
+    # Named neurological conditions
+    "epilepsy":                  "Neurology",
+    "parkinson":                 "Neurology",
+    "alzheimer":                 "Neurology",
+    "multiple sclerosis":        "Neurology",
+    "neuropathy":                "Neurology",
+    "dementia":                  "Neurology",
+    "migraine":                  "Neurology",
+    "trigeminal neuralgia":      "Neurology",
+    "bell's palsy":              "Neurology",
+    "meningitis":                "Neurology",
 
-    # ── Dermatology ────────────────────────────────────────────────────────
-    "skin":                 "Dermatology",
-    "rash":                 "Dermatology",
-    "acne":                 "Dermatology",
-    "eczema":               "Dermatology",
-    "itching":              "Dermatology",
-    "hair loss":            "Dermatology",
-    "psoriasis":            "Dermatology",
-    "fungal infection":     "Dermatology",
-    "ringworm":             "Dermatology",
-    "hives":                "Dermatology",
-    "urticaria":            "Dermatology",
-    "mole":                 "Dermatology",
-    "wart":                 "Dermatology",
-    "dandruff":             "Dermatology",
-    "vitiligo":             "Dermatology",
-    "nail":                 "Dermatology",
-    "wound":                "Dermatology",
-    "burn":                 "Dermatology",
-    "pigmentation":         "Dermatology",
+    # Named GI conditions
+    "crohn":                     "Gastroenterology",
+    "colitis":                   "Gastroenterology",
+    "ibs":                       "Gastroenterology",
+    "irritable bowel":           "Gastroenterology",
+    "celiac":                    "Gastroenterology",
+    "hepatitis":                 "Gastroenterology",
+    "cirrhosis":                 "Gastroenterology",
+    "pancreatitis":              "Gastroenterology",
+    "gastritis":                 "Gastroenterology",
+    "peptic ulcer":              "Gastroenterology",
+    "acid reflux":               "Gastroenterology",
+    "gerd":                      "Gastroenterology",
 
-    # ── ENT ────────────────────────────────────────────────────────────────
-    "ear":                  "ENT",
-    "nose":                 "ENT",
-    "throat":               "ENT",
-    "sore throat":          "ENT",
-    "hearing loss":         "ENT",
-    "sinusitis":            "ENT",
-    "tonsil":               "ENT",
-    "snoring":              "ENT",
-    "sleep apnea":          "ENT",
-    "nasal":                "ENT",
-    "tinnitus":             "ENT",
-    "laryngitis":           "ENT",
-    "voice":                "ENT",
-    "adenoid":              "ENT",
-    "nosebleed":            "ENT",
-    "swallowing":           "ENT",
+    # Named orthopaedic conditions
+    "arthritis":                 "Orthopedics",
+    "osteoporosis":              "Orthopedics",
+    "scoliosis":                 "Orthopedics",
+    "osteoarthritis":            "Orthopedics",
+    "rheumatoid":                "Orthopedics",
+    "gout":                      "Orthopedics",
+    "slipped disc":              "Orthopedics",
+    "herniated disc":            "Orthopedics",
+    "fracture":                  "Orthopedics",
+    "torn ligament":             "Orthopedics",
+    "rotator cuff":              "Orthopedics",
 
-    # ── Ophthalmology ──────────────────────────────────────────────────────
-    "eye":                  "Ophthalmology",
-    "vision":               "Ophthalmology",
-    "blurred vision":       "Ophthalmology",
-    "eye pain":             "Ophthalmology",
-    "cataract":             "Ophthalmology",
-    "glaucoma":             "Ophthalmology",
-    "dry eye":              "Ophthalmology",
-    "conjunctivitis":       "Ophthalmology",
-    "pink eye":             "Ophthalmology",
-    "retina":               "Ophthalmology",
-    "short sighted":        "Ophthalmology",
-    "long sighted":         "Ophthalmology",
-    "colour blind":         "Ophthalmology",
-    "double vision":        "Ophthalmology",
+    # Named skin conditions
+    "eczema":                    "Dermatology",
+    "psoriasis":                 "Dermatology",
+    "vitiligo":                  "Dermatology",
+    "rosacea":                   "Dermatology",
+    "melanoma":                  "Dermatology",
+    "ringworm":                  "Dermatology",
+    "urticaria":                 "Dermatology",
+    "alopecia":                  "Dermatology",
 
-    # ── Endocrinology ──────────────────────────────────────────────────────
-    "diabetes":             "Endocrinology",
-    "thyroid":              "Endocrinology",
-    "weight gain":          "Endocrinology",
-    "hormonal":             "Endocrinology",
-    "blood sugar":          "Endocrinology",
-    "insulin":              "Endocrinology",
-    "hyperthyroid":         "Endocrinology",
-    "hypothyroid":          "Endocrinology",
-    "goiter":               "Endocrinology",
-    "adrenal":              "Endocrinology",
-    "pituitary":            "Endocrinology",
-    "obesity":              "Endocrinology",
-    "metabolic":            "Endocrinology",
-    "polycystic":           "Endocrinology",
-    "pcos":                 "Endocrinology",
-    "cushing":              "Endocrinology",
+    # Named ENT conditions
+    "sinusitis":                 "ENT",
+    "tonsillitis":               "ENT",
+    "otitis":                    "ENT",
+    "sleep apnea":               "ENT",
+    "tinnitus":                  "ENT",
+    "vertigo":                   "ENT",
+    "meniere":                   "ENT",
+    "deviated septum":           "ENT",
 
-    # ── Urology ────────────────────────────────────────────────────────────
-    "urinary":              "Urology",
-    "kidney":               "Urology",
-    "bladder":              "Urology",
-    "prostate":             "Urology",
-    "kidney stone":         "Urology",
-    "uti":                  "Urology",
-    "urinary infection":    "Urology",
-    "incontinence":         "Urology",
-    "erectile":             "Urology",
-    "testicular":           "Urology",
-    "renal":                "Urology",
-    "blood in urine":       "Urology",
-    "frequent urination":   "Urology",
+    # Named eye conditions
+    "glaucoma":                  "Ophthalmology",
+    "cataract":                  "Ophthalmology",
+    "macular degeneration":      "Ophthalmology",
+    "conjunctivitis":            "Ophthalmology",
+    "retinal":                   "Ophthalmology",
+    "diabetic retinopathy":      "Ophthalmology",
+    "strabismus":                "Ophthalmology",
 
-    # ── Obstetrics & Gynecology ────────────────────────────────────────────
-    "pregnancy":            "Obstetrics & Gynecology",
-    "menstrual":            "Obstetrics & Gynecology",
-    "ovarian":              "Obstetrics & Gynecology",
-    "pelvic pain":          "Obstetrics & Gynecology",
-    "gynecology":           "Obstetrics & Gynecology",
-    "period":               "Obstetrics & Gynecology",
-    "irregular period":     "Obstetrics & Gynecology",
-    "vaginal":              "Obstetrics & Gynecology",
-    "uterus":               "Obstetrics & Gynecology",
-    "fibroid":              "Obstetrics & Gynecology",
-    "endometriosis":        "Obstetrics & Gynecology",
-    "menopause":            "Obstetrics & Gynecology",
-    "fertility":            "Obstetrics & Gynecology",
-    "antenatal":            "Obstetrics & Gynecology",
-    "prenatal":             "Obstetrics & Gynecology",
-    "cervical":             "Obstetrics & Gynecology",
-    "breast lump":          "Obstetrics & Gynecology",
-    "breast pain":          "Obstetrics & Gynecology",
+    # Named endocrine/metabolic conditions
+    "diabetes":                  "Endocrinology",
+    "hypothyroid":               "Endocrinology",
+    "hyperthyroid":              "Endocrinology",
+    "thyroid":                   "Endocrinology",
+    "goiter":                    "Endocrinology",
+    "pcos":                      "Endocrinology",
+    "polycystic ovary":          "Endocrinology",
+    "cushing":                   "Endocrinology",
+    "addison":                   "Endocrinology",
+    "hypoglycemia":              "Endocrinology",
 
-    # ── Pediatrics ─────────────────────────────────────────────────────────
-    "child":                "Pediatrics",
-    "infant":               "Pediatrics",
-    "baby":                 "Pediatrics",
-    "pediatric":            "Pediatrics",
-    "toddler":              "Pediatrics",
-    "vaccination":          "Pediatrics",
-    "growth":               "Pediatrics",
-    "developmental":        "Pediatrics",
-    "my son":               "Pediatrics",
-    "my daughter":          "Pediatrics",
-    "my kid":               "Pediatrics",
-    "my child":             "Pediatrics",
+    # Named urological conditions
+    "kidney stone":              "Urology",
+    "renal stone":               "Urology",
+    "prostate":                  "Urology",
+    "bladder cancer":            "Urology",
+    "urinary tract infection":   "Urology",
+    "uti":                       "Urology",
+    "incontinence":              "Urology",
+    "hydronephrosis":            "Urology",
 
-    # ── Infectious Disease / General Medicine ──────────────────────────────
-    "aids":                 "General Medicine",
-    "hiv":                  "General Medicine",
-    "tuberculosis":         "General Medicine",
-    "tb ":                  "General Medicine",
-    "malaria":              "General Medicine",
-    "dengue":               "General Medicine",
-    "typhoid":              "General Medicine",
-    "covid":                "General Medicine",
-    "coronavirus":          "General Medicine",
-    "infection":            "General Medicine",
-    "viral":                "General Medicine",
-    "bacterial":            "General Medicine",
-    "fever":                "General Medicine",
-    "flu":                  "General Medicine",
-    "cold":                 "General Medicine",
-    "fatigue":              "General Medicine",
-    "general checkup":      "General Medicine",
-    "checkup":              "General Medicine",
-    "weakness":             "General Medicine",
-    "weight loss":          "General Medicine",
-    "loss of appetite":     "General Medicine",
-    "night sweats":         "General Medicine",
-    "swollen glands":       "General Medicine",
-    "lymph node":           "General Medicine",
-    "anaemia":              "General Medicine",
-    "anemia":               "General Medicine",
-    "sickle cell":          "General Medicine",
-    "leptospirosis":        "General Medicine",
-    "chikungunya":          "General Medicine",
+    # Named OB/GYN conditions
+    "endometriosis":             "Obstetrics & Gynecology",
+    "fibroid":                   "Obstetrics & Gynecology",
+    "ovarian cyst":              "Obstetrics & Gynecology",
+    "pregnancy":                 "Obstetrics & Gynecology",
+    "antenatal":                 "Obstetrics & Gynecology",
+    "prenatal":                  "Obstetrics & Gynecology",
+    "menopause":                 "Obstetrics & Gynecology",
+    "cervical":                  "Obstetrics & Gynecology",
 
-    # ── Psychiatry / Mental Health ─────────────────────────────────────────
-    "depression":           "General Medicine",
-    "anxiety":              "General Medicine",
-    "stress":               "General Medicine",
-    "mental health":        "General Medicine",
-    "panic attack":         "General Medicine",
-    "insomnia":             "General Medicine",
-    "sleep":                "General Medicine",
-    "bipolar":              "General Medicine",
-    "schizophrenia":        "General Medicine",
-    "ocd":                  "General Medicine",
-    "ptsd":                 "General Medicine",
+    # Named paediatric
+    "my baby":                   "Pediatrics",
+    "my infant":                 "Pediatrics",
+    "my toddler":                "Pediatrics",
+    "my child":                  "Pediatrics",
+    "my son":                    "Pediatrics",
+    "my daughter":               "Pediatrics",
+    "my kid":                    "Pediatrics",
+    "vaccination":               "Pediatrics",
+    "immunisation":              "Pediatrics",
 
-    # ── Pulmonology / Respiratory ──────────────────────────────────────────
-    "asthma":               "General Medicine",
-    "cough":                "General Medicine",
-    "breathing":            "General Medicine",
-    "lung":                 "General Medicine",
-    "pneumonia":            "General Medicine",
-    "bronchitis":           "General Medicine",
-    "copd":                 "General Medicine",
-    "wheezing":             "General Medicine",
-    "chest tightness":      "General Medicine",
-    "phlegm":               "General Medicine",
-    "sputum":               "General Medicine",
+    # Named infectious diseases
+    "hiv":                       "General Medicine",
+    "aids":                      "General Medicine",
+    "tuberculosis":              "General Medicine",
+    "dengue":                    "General Medicine",
+    "malaria":                   "General Medicine",
+    "typhoid":                   "General Medicine",
+    "leptospirosis":             "General Medicine",
+    "chikungunya":               "General Medicine",
+    "covid":                     "General Medicine",
 
-    # ── Oncology / Cancer ──────────────────────────────────────────────────
-    "cancer":               "General Medicine",
-    "tumour":               "General Medicine",
-    "tumor":                "General Medicine",
-    "lump":                 "General Medicine",
-    "chemotherapy":         "General Medicine",
-    "radiation":            "General Medicine",
-    "biopsy":               "General Medicine",
-    "lymphoma":             "General Medicine",
-    "leukemia":             "General Medicine",
+    # Named mental health
+    "bipolar":                   "General Medicine",
+    "schizophrenia":             "General Medicine",
+    "ocd":                       "General Medicine",
+    "ptsd":                      "General Medicine",
+    "eating disorder":           "General Medicine",
+    "anorexia":                  "General Medicine",
 
-    # ── Allergy & Immunology ───────────────────────────────────────────────
-    "allergy":              "General Medicine",
-    "allergic":             "General Medicine",
-    "anaphylaxis":          "General Medicine",
-    "autoimmune":           "General Medicine",
-    "lupus":                "General Medicine",
+    # Named respiratory
+    "asthma":                    "General Medicine",
+    "copd":                      "General Medicine",
+    "pneumonia":                 "General Medicine",
+    "bronchitis":                "General Medicine",
+    "emphysema":                 "General Medicine",
+
+    # Named cancer/oncology
+    "cancer":                    "General Medicine",
+    "tumour":                    "General Medicine",
+    "tumor":                     "General Medicine",
+    "lymphoma":                  "General Medicine",
+    "leukemia":                  "General Medicine",
+    "chemotherapy":              "General Medicine",
+
+    # Named blood/haematology
+    "anaemia":                   "General Medicine",
+    "anemia":                    "General Medicine",
+    "sickle cell":               "General Medicine",
+    "thalassemia":               "General Medicine",
+
+    # Named autoimmune
+    "lupus":                     "General Medicine",
+    "autoimmune":                "General Medicine",
 }
 
-# Emergency keywords — checked before routing
+
+# ── Tier 2: GP FIRST ──────────────────────────────────────────────────────────
+# Vague or acute symptom — patient describes how they feel, not what they have.
+# Send to General Medicine. GP decides if specialist referral is needed.
+# suggested_specialty hints at which specialist the GP may refer to.
+
+GP_FIRST: dict[str, str] = {
+
+    # Cardiovascular symptoms
+    "chest pain":                "Cardiology",
+    "heart racing":              "Cardiology",
+    "heart pounding":            "Cardiology",
+    "palpitations":              "Cardiology",
+    "high blood pressure":       "Cardiology",
+    "shortness of breath":       "Cardiology",
+    "out of breath":             "Cardiology",
+    "cholesterol":               "Cardiology",
+
+    # Neurological symptoms
+    "headache":                  "Neurology",
+    "head pain":                 "Neurology",
+    "dizziness":                 "Neurology",
+    "feeling dizzy":             "Neurology",
+    "numbness":                  "Neurology",
+    "tingling":                  "Neurology",
+    "memory loss":               "Neurology",
+    "forgetfulness":             "Neurology",
+    "tremor":                    "Neurology",
+    "shaking":                   "Neurology",
+    "seizure":                   "Neurology",
+    "fits":                      "Neurology",
+    "fainting":                  "Neurology",
+    "blackout":                  "Neurology",
+    "confusion":                 "Neurology",
+    "brain fog":                 "Neurology",
+    "stroke":                    "Neurology",
+
+    # GI symptoms
+    "stomach ache":              "Gastroenterology",
+    "stomach pain":              "Gastroenterology",
+    "abdominal pain":            "Gastroenterology",
+    "belly pain":                "Gastroenterology",
+    "nausea":                    "Gastroenterology",
+    "vomiting":                  "Gastroenterology",
+    "diarrhea":                  "Gastroenterology",
+    "constipation":              "Gastroenterology",
+    "bloating":                  "Gastroenterology",
+    "indigestion":               "Gastroenterology",
+    "heartburn":                 "Gastroenterology",
+    "blood in stool":            "Gastroenterology",
+    "jaundice":                  "Gastroenterology",
+    "yellow skin":               "Gastroenterology",
+    "liver":                     "Gastroenterology",
+    "stomach":                   "Gastroenterology",
+
+    # Orthopaedic symptoms
+    "back pain":                 "Orthopedics",
+    "lower back":                "Orthopedics",
+    "knee pain":                 "Orthopedics",
+    "joint pain":                "Orthopedics",
+    "shoulder pain":             "Orthopedics",
+    "hip pain":                  "Orthopedics",
+    "neck pain":                 "Orthopedics",
+    "wrist pain":                "Orthopedics",
+    "ankle pain":                "Orthopedics",
+    "muscle pain":               "Orthopedics",
+    "bone pain":                 "Orthopedics",
+    "sports injury":             "Orthopedics",
+    "swollen joint":             "Orthopedics",
+    "stiff joints":              "Orthopedics",
+    "spine":                     "Orthopedics",
+
+    # Skin symptoms
+    "rash":                      "Dermatology",
+    "skin rash":                 "Dermatology",
+    "itching":                   "Dermatology",
+    "itchy skin":                "Dermatology",
+    "acne":                      "Dermatology",
+    "hair loss":                 "Dermatology",
+    "dry skin":                  "Dermatology",
+    "skin lesion":               "Dermatology",
+    "mole":                      "Dermatology",
+    "wart":                      "Dermatology",
+    "nail problem":              "Dermatology",
+    "dandruff":                  "Dermatology",
+    "skin":                      "Dermatology",
+    "fungal":                    "Dermatology",
+
+    # ENT symptoms
+    "sore throat":               "ENT",
+    "ear pain":                  "ENT",
+    "earache":                   "ENT",
+    "hearing loss":              "ENT",
+    "hard of hearing":           "ENT",
+    "blocked nose":              "ENT",
+    "runny nose":                "ENT",
+    "nasal congestion":          "ENT",
+    "nosebleed":                 "ENT",
+    "snoring":                   "ENT",
+    "hoarse voice":              "ENT",
+    "loss of voice":             "ENT",
+    "difficulty swallowing":     "ENT",
+    "ear":                       "ENT",
+    "nose":                      "ENT",
+    "throat":                    "ENT",
+
+    # Eye symptoms
+    "eye pain":                  "Ophthalmology",
+    "blurred vision":            "Ophthalmology",
+    "double vision":             "Ophthalmology",
+    "red eye":                   "Ophthalmology",
+    "itchy eyes":                "Ophthalmology",
+    "watery eyes":               "Ophthalmology",
+    "vision problem":            "Ophthalmology",
+    "eye":                       "Ophthalmology",
+
+    # Endocrine symptoms
+    "weight gain":               "Endocrinology",
+    "weight loss":               "Endocrinology",
+    "always thirsty":            "Endocrinology",
+    "frequent urination":        "Endocrinology",
+    "blood sugar":               "Endocrinology",
+    "hair thinning":             "Endocrinology",
+    "neck swelling":             "Endocrinology",
+
+    # Urological symptoms
+    "burning urination":         "Urology",
+    "pain urinating":            "Urology",
+    "blood in urine":            "Urology",
+    "kidney pain":               "Urology",
+    "difficulty urinating":      "Urology",
+    "urinary":                   "Urology",
+    "kidney":                    "Urology",
+    "bladder":                   "Urology",
+
+    # OB/GYN symptoms
+    "irregular periods":         "Obstetrics & Gynecology",
+    "missed period":             "Obstetrics & Gynecology",
+    "pelvic pain":               "Obstetrics & Gynecology",
+    "vaginal discharge":         "Obstetrics & Gynecology",
+    "breast pain":               "Obstetrics & Gynecology",
+    "breast lump":               "Obstetrics & Gynecology",
+    "period pain":               "Obstetrics & Gynecology",
+    "heavy periods":             "Obstetrics & Gynecology",
+
+    # General / multi-system
+    "fever":                     "General Medicine",
+    "high fever":                "General Medicine",
+    "flu":                       "General Medicine",
+    "cold":                      "General Medicine",
+    "cough":                     "General Medicine",
+    "fatigue":                   "General Medicine",
+    "tired":                     "General Medicine",
+    "exhausted":                 "General Medicine",
+    "weakness":                  "General Medicine",
+    "loss of appetite":          "General Medicine",
+    "night sweats":              "General Medicine",
+    "swollen glands":            "General Medicine",
+    "lymph node":                "General Medicine",
+    "body ache":                 "General Medicine",
+    "body pain":                 "General Medicine",
+    "depression":                "General Medicine",
+    "anxiety":                   "General Medicine",
+    "stress":                    "General Medicine",
+    "panic attack":              "General Medicine",
+    "insomnia":                  "General Medicine",
+    "sleep problem":             "General Medicine",
+    "wheezing":                  "General Medicine",
+    "breathing problem":         "General Medicine",
+    "chest tightness":           "General Medicine",
+    "phlegm":                    "General Medicine",
+    "checkup":                   "General Medicine",
+    "lump":                      "General Medicine",
+    "swelling":                  "General Medicine",
+    "infection":                 "General Medicine",
+}
+
+# ── Tier 3: CLARIFY triggers ──────────────────────────────────────────────────
+
+CLARIFY_TRIGGERS = {
+    "not well", "unwell", "sick", "ill", "feeling bad",
+    "not feeling good", "not feeling well", "something is wrong",
+    "feeling off", "not myself", "feel terrible", "feel awful",
+    "i feel bad", "i feel sick", "feel sick", "under the weather",
+    "i don't feel good", "i dont feel good",
+}
+
+# ── Emergency keywords ────────────────────────────────────────────────────────
+
 EMERGENCY_KEYWORDS = [
-    "can't breathe",
-    "cannot breathe",
-    "difficulty breathing",
-    "unconscious",
-    "heavy bleeding",
-    "heart attack",
-    "severe head injury",
-    "loss of consciousness",
-    "not breathing",
-    "stroke symptoms",
-    "choking",
-    "overdose",
-    "suicide",
-    "poisoning",
-    "severe allergic",
-    "anaphylactic shock",
+    "can't breathe", "cannot breathe", "difficulty breathing",
+    "unconscious", "heavy bleeding", "heart attack",
+    "severe head injury", "loss of consciousness", "not breathing",
+    "stroke symptoms", "choking", "overdose", "suicide",
+    "poisoning", "severe allergic", "anaphylactic shock",
+    "severe chest pain", "crushing chest",
 ]
 
-# Medication mention keywords — triggers drug interaction warning
+# ── Medication keywords ───────────────────────────────────────────────────────
+
 MEDICATION_KEYWORDS = [
-    "taking",
-    "on medication",
-    "prescribed",
-    "currently using",
-    "i take",
-    "i am on",
-    "i'm on",
-    "my medication",
-    "my medicine",
-    "my tablets",
-    "my pills",
-    "my drugs",
+    "taking", "on medication", "prescribed", "currently using",
+    "i take", "i am on", "i'm on", "my medication", "my medicine",
+    "my tablets", "my pills", "my drugs",
     "metformin", "insulin", "aspirin", "paracetamol", "ibuprofen",
     "amoxicillin", "warfarin", "lisinopril", "atorvastatin", "omeprazole",
     "blood thinner", "steroids", "antidepressant", "antibiotic",
@@ -340,51 +431,104 @@ MEDICATION_KEYWORDS = [
 ]
 
 
-def is_emergency(symptoms: str) -> bool:
-    lower = symptoms.lower()
-    return any(kw in lower for kw in EMERGENCY_KEYWORDS)
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _match_table(text: str, table: dict) -> str | None:
+    for keyword, specialty in table.items():
+        if keyword in text:
+            return specialty
+    return None
+
+def _is_clarify(text: str) -> bool:
+    if any(phrase in text for phrase in CLARIFY_TRIGGERS):
+        return True
+    words = text.split()
+    if len(words) <= 3 and not _match_table(text, DIRECT_SPECIALIST) and not _match_table(text, GP_FIRST):
+        return True
+    return False
 
 
-def mentions_medication(symptoms: str) -> bool:
-    lower = symptoms.lower()
-    return any(kw in lower for kw in MEDICATION_KEYWORDS)
-
+# ── Tool ──────────────────────────────────────────────────────────────────────
 
 @tool
 def route_to_specialist(symptoms: str) -> dict:
     """
-    Given a patient's description of symptoms, conditions, or reason for visit,
-    returns the most appropriate medical specialty plus safety flags.
+    Routes a patient's message to the most appropriate medical specialty
+    using a three-tier system that mirrors real clinical practice.
+
+    Tier 1 DIRECT: patient has a known diagnosis or requests a specialist → direct booking
+    Tier 2 GP_FIRST: patient describes symptoms without a diagnosis → General Medicine first
+    Tier 3 CLARIFY: too vague → agent asks one follow-up question before routing
+
+    Args:
+        symptoms: Patient's full message describing their health concern
 
     Returns:
-        specialty:            str   — e.g. "Cardiology", "General Medicine"
-        is_emergency:         bool  — True if red-flag symptoms detected
-        confidence:           str   — "high" | "low"
-        mentions_medication:  bool  — True if patient mentions current medications
-                                      Agent should add drug warning to intake note
-                                      and remind patient to bring medication list
+        specialty:           str | None  — specialty to book (None if clarify needed)
+        routing_tier:        str         — "direct" | "gp_first" | "clarify" | "emergency"
+        suggested_specialty: str | None  — for gp_first: specialist GP may refer to (show to patient)
+        is_emergency:        bool
+        mentions_medication: bool
+        clarify_question:    str | None  — question to ask if routing_tier == "clarify"
     """
-    if is_emergency(symptoms):
+    text = symptoms.lower().strip()
+    med  = any(kw in text for kw in MEDICATION_KEYWORDS)
+
+    # Emergency — always first
+    if any(kw in text for kw in EMERGENCY_KEYWORDS):
         return {
             "specialty":           None,
+            "routing_tier":        "emergency",
+            "suggested_specialty": None,
             "is_emergency":        True,
-            "confidence":          "high",
-            "mentions_medication": mentions_medication(symptoms),
+            "mentions_medication": med,
+            "clarify_question":    None,
         }
 
-    lower = symptoms.lower()
-    for keyword, specialty in ROUTING_TABLE.items():
-        if keyword in lower:
-            return {
-                "specialty":           specialty,
-                "is_emergency":        False,
-                "confidence":          "high",
-                "mentions_medication": mentions_medication(symptoms),
-            }
+    # Tier 1 — direct specialist
+    direct = _match_table(text, DIRECT_SPECIALIST)
+    if direct:
+        return {
+            "specialty":           direct,
+            "routing_tier":        "direct",
+            "suggested_specialty": None,
+            "is_emergency":        False,
+            "mentions_medication": med,
+            "clarify_question":    None,
+        }
 
+    # Tier 2 — GP first
+    gp_suggestion = _match_table(text, GP_FIRST)
+    if gp_suggestion:
+        return {
+            "specialty":           "General Medicine",
+            "routing_tier":        "gp_first",
+            "suggested_specialty": gp_suggestion if gp_suggestion != "General Medicine" else None,
+            "is_emergency":        False,
+            "mentions_medication": med,
+            "clarify_question":    None,
+        }
+
+    # Tier 3 — clarify
+    if _is_clarify(text):
+        return {
+            "specialty":           None,
+            "routing_tier":        "clarify",
+            "suggested_specialty": None,
+            "is_emergency":        False,
+            "mentions_medication": med,
+            "clarify_question":    (
+                "Could you tell me a bit more about what you're experiencing — "
+                "is it pain, fatigue, digestive issues, or something else?"
+            ),
+        }
+
+    # Fallback
     return {
         "specialty":           "General Medicine",
+        "routing_tier":        "gp_first",
+        "suggested_specialty": None,
         "is_emergency":        False,
-        "confidence":          "low",
-        "mentions_medication": mentions_medication(symptoms),
+        "mentions_medication": med,
+        "clarify_question":    None,
     }

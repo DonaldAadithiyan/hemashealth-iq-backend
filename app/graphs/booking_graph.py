@@ -292,7 +292,18 @@ def build_graph():
                 extra["detected_specialty"]  = data.get("specialty")
                 extra["is_emergency"]        = data.get("is_emergency", False)
                 extra["mentions_medication"] = data.get("mentions_medication", False)
-                extra["stage"]               = "emergency" if data.get("is_emergency") else "routing"
+                routing_tier = data.get("routing_tier", "gp_first")
+                if data.get("is_emergency"):
+                    extra["stage"] = "emergency"
+                elif routing_tier == "clarify":
+                    # Stay on intake — agent asks follow-up, does not show location picker yet
+                    extra["stage"] = "intake"
+                    print(f"{YELLOW}│  ❓ CLARIFY: symptoms too vague — agent will ask follow-up{R}")
+                else:
+                    # "direct" or "gp_first" — both proceed to routing (show location picker)
+                    extra["stage"] = "routing"
+                    tier_label = "DIRECT → specialist" if routing_tier == "direct" else "GP-FIRST → General Medicine"
+                    print(f"{YELLOW}│  🏥 ROUTING TIER: {tier_label}{R}")
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
