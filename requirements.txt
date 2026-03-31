@@ -24,7 +24,3 @@ python-multipart==0.0.9
 
 # Timezone (zoneinfo backport for Python < 3.9)
 tzdata==2024.1
-
-# Tests (remove from prod if you want a lighter build)
-pytest==8.3.3
-anyio==4.4.0
