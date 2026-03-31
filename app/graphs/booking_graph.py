@@ -28,6 +28,7 @@ from app.tools.routing import route_to_specialist
 from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
 from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
+from app.tools.intake import store_intake_note
 from app.utils.pii_vault import PIIVault
 
 ALL_TOOLS = [
@@ -37,6 +38,7 @@ ALL_TOOLS = [
     book_appointment,
     cancel_appointment,
     reschedule_appointment,
+    store_intake_note,
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
@@ -57,6 +59,7 @@ TOOL_COLOURS = {
     "book_appointment":         GREEN,
     "cancel_appointment":       RED,
     "reschedule_appointment":   CYAN,
+    "store_intake_note":        GREEN,
 }
 
 def _log_node(name: str, colour: str = CYAN):
@@ -254,22 +257,26 @@ def build_graph():
 
             # Extract state updates from REAL data before masking
             if name == "route_to_specialist":
-                extra["detected_specialty"] = data.get("specialty")
-                extra["is_emergency"]       = data.get("is_emergency", False)
-                extra["stage"]              = "emergency" if data.get("is_emergency") else "routing"
+                extra["detected_specialty"]  = data.get("specialty")
+                extra["is_emergency"]        = data.get("is_emergency", False)
+                extra["mentions_medication"] = data.get("mentions_medication", False)
+                extra["stage"]               = "emergency" if data.get("is_emergency") else "routing"
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
 
             elif name == "lookup_or_create_patient":
                 if data.get("patient_id"):
-                    # Store real patient_id in state (state is server-side only)
                     extra["patient_id"] = data["patient_id"]
                     extra["stage"]      = "collecting"
-                    # Register in vault
                     vault.register("patient_id",   data["patient_id"])
                     vault.register("patient_name", data.get("name", ""))
                     vault.register("phone",        data.get("phone", ""))
+                    # Feature 1: flag recurring if last visit specialty matches current
+                    last = data.get("last_visit") or {}
+                    if last and last.get("specialty") == state.get("detected_specialty"):
+                        extra["is_recurring"] = True
+                        print(f"{YELLOW}│  🔄 RECURRING SYMPTOM DETECTED: {last.get('specialty')} — prev visit {last.get('appointment_date','')[:10]}{R}")
 
             elif name == "book_appointment":
                 if data.get("status") == "confirmed":
@@ -288,6 +295,12 @@ def build_graph():
                     extra["selected_slot_datetime"] = data.get("new_slot_datetime")
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
+
+            elif name == "store_intake_note":
+                if data.get("success"):
+                    extra["intake_complete"] = True
+                    extra["stage"]           = "intake_complete"
+                    print(f"{GREEN}│  📋 INTAKE NOTE SAVED: event_id={data.get('event_id')}{R}")
 
             # Mask real values in response before LLM sees it
             safe_data    = vault.mask_dict(data)

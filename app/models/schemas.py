@@ -30,7 +30,8 @@ class UIAction(str, Enum):
     SHOW_CONFIRMATION = "SHOW_CONFIRMATION"
     SHOW_PAYMENT      = "SHOW_PAYMENT"
     SHOW_CANCELLED    = "SHOW_CANCELLED"
-    SHOW_RESCHEDULED  = "SHOW_RESCHEDULED"
+    SHOW_RESCHEDULED     = "SHOW_RESCHEDULED"
+    SHOW_INTAKE_COMPLETE = "SHOW_INTAKE_COMPLETE"  # intake note saved — show to patient as confirmation
 
 
 # Map stage → UIAction — single source of truth
@@ -42,7 +43,8 @@ _STAGE_TO_UI: dict[str, UIAction] = {
     "collecting":  UIAction.SHOW_PATIENT_FORM,
     "confirmed":   UIAction.SHOW_PAYMENT,
     "cancelled":   UIAction.SHOW_CANCELLED,
-    "rescheduled": UIAction.SHOW_RESCHEDULED,
+    "rescheduled":      UIAction.SHOW_RESCHEDULED,
+    "intake_complete":   UIAction.SHOW_INTAKE_COMPLETE,
 }
 
 def stage_to_ui_action(stage: str) -> UIAction:
@@ -67,6 +69,9 @@ class BookingState(BaseModel):
 
     patient_id:             Optional[str] = None
     appointment_id:         Optional[str] = None
+    mentions_medication:    bool = False   # patient mentioned current medications
+    is_recurring:           bool = False   # symptom matches a previous visit
+    intake_complete:        bool = False   # intake note saved to DB
 
     # Conversation summary — set by the summarizer after SUMMARIZE_AFTER_TURNS turns.
     # Replaces old messages in the context window. Frontend stores and sends back as-is.

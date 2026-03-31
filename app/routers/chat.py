@@ -59,6 +59,9 @@ async def chat(req: ChatRequest):
             selected_doctor_name=bs.selected_doctor_name,
             appointment_id=bs.appointment_id,
             is_emergency=bs.is_emergency,
+            mentions_medication=bs.mentions_medication,
+            is_recurring=bs.is_recurring,
+            intake_complete=bs.intake_complete,
             conversation_summary=bs.conversation_summary,
         )
     except Exception as e:

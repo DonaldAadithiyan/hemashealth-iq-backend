@@ -1,8 +1,12 @@
 """
 Symptom → Specialist routing tool.
 
-Rule-based keyword router. The LLM is used as fallback only when no keyword matches.
-Covers symptoms, disease names, conditions, and medical terms.
+Rule-based keyword router. Returns:
+  - specialty: which specialist to route to
+  - is_emergency: whether this needs immediate A&E
+  - confidence: high (keyword matched) | low (fallback)
+  - mentions_medication: True if patient mentions current medications
+    → triggers drug interaction warning in the agent flow
 """
 
 from langchain_core.tools import tool
@@ -276,7 +280,7 @@ ROUTING_TABLE: dict[str, str] = {
     "phlegm":               "General Medicine",
     "sputum":               "General Medicine",
 
-    # ── Oncology / Cancer (route to General Medicine for referral) ─────────
+    # ── Oncology / Cancer ──────────────────────────────────────────────────
     "cancer":               "General Medicine",
     "tumour":               "General Medicine",
     "tumor":                "General Medicine",
@@ -295,7 +299,7 @@ ROUTING_TABLE: dict[str, str] = {
     "lupus":                "General Medicine",
 }
 
-# Emergency keywords — checked before any routing
+# Emergency keywords — checked before routing
 EMERGENCY_KEYWORDS = [
     "can't breathe",
     "cannot breathe",
@@ -315,31 +319,72 @@ EMERGENCY_KEYWORDS = [
     "anaphylactic shock",
 ]
 
+# Medication mention keywords — triggers drug interaction warning
+MEDICATION_KEYWORDS = [
+    "taking",
+    "on medication",
+    "prescribed",
+    "currently using",
+    "i take",
+    "i am on",
+    "i'm on",
+    "my medication",
+    "my medicine",
+    "my tablets",
+    "my pills",
+    "my drugs",
+    "metformin", "insulin", "aspirin", "paracetamol", "ibuprofen",
+    "amoxicillin", "warfarin", "lisinopril", "atorvastatin", "omeprazole",
+    "blood thinner", "steroids", "antidepressant", "antibiotic",
+    "blood pressure medication", "diabetes medication",
+]
+
 
 def is_emergency(symptoms: str) -> bool:
     lower = symptoms.lower()
     return any(kw in lower for kw in EMERGENCY_KEYWORDS)
 
 
+def mentions_medication(symptoms: str) -> bool:
+    lower = symptoms.lower()
+    return any(kw in lower for kw in MEDICATION_KEYWORDS)
+
+
 @tool
 def route_to_specialist(symptoms: str) -> dict:
     """
     Given a patient's description of symptoms, conditions, or reason for visit,
-    returns the most appropriate medical specialty to route them to.
-
-    Covers symptoms, disease names, medical conditions, and common terms.
+    returns the most appropriate medical specialty plus safety flags.
 
     Returns:
-        specialty:   str   — e.g. "Cardiology", "General Medicine"
-        is_emergency: bool — True if red-flag symptoms detected
-        confidence:  str   — "high" | "low"
+        specialty:            str   — e.g. "Cardiology", "General Medicine"
+        is_emergency:         bool  — True if red-flag symptoms detected
+        confidence:           str   — "high" | "low"
+        mentions_medication:  bool  — True if patient mentions current medications
+                                      Agent should add drug warning to intake note
+                                      and remind patient to bring medication list
     """
     if is_emergency(symptoms):
-        return {"specialty": None, "is_emergency": True, "confidence": "high"}
+        return {
+            "specialty":           None,
+            "is_emergency":        True,
+            "confidence":          "high",
+            "mentions_medication": mentions_medication(symptoms),
+        }
 
     lower = symptoms.lower()
     for keyword, specialty in ROUTING_TABLE.items():
         if keyword in lower:
-            return {"specialty": specialty, "is_emergency": False, "confidence": "high"}
+            return {
+                "specialty":           specialty,
+                "is_emergency":        False,
+                "confidence":          "high",
+                "mentions_medication": mentions_medication(symptoms),
+            }
 
-    return {"specialty": "General Medicine", "is_emergency": False, "confidence": "low"}
+    return {
+        "specialty":           "General Medicine",
+        "is_emergency":        False,
+        "confidence":          "low",
+        "mentions_medication": mentions_medication(symptoms),
+    }

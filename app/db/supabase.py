@@ -441,3 +441,72 @@ def reschedule_appointment_db(
         "status":           "reserved",
     }).eq("id", appointment_id).execute()
     return True
+
+# ── Patient history ───────────────────────────────────────────────────────────
+
+def get_last_appointment_for_patient(patient_id: str) -> dict | None:
+    """
+    Fetch the most recent appointment for a returning patient.
+    Used for symptom progression tracking.
+    Returns: appointment_date, reason_for_visit, doctor_name, specialty, status
+    """
+    sb   = get_supabase()
+    resp = (
+        sb.table("appointments")
+        .select("id, appointment_date, reason_for_visit, status, doctor_id")
+        .eq("patient_id", patient_id)
+        .in_("status", ["confirmed", "completed", "paid", "reserved"])
+        .order("appointment_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        return None
+
+    appt   = rows[0]
+    doctor = get_doctor(appt["doctor_id"]) or {}
+
+    return {
+        "appointment_id":   appt["id"],
+        "appointment_date": appt["appointment_date"],
+        "reason_for_visit": appt.get("reason_for_visit"),
+        "status":           appt["status"],
+        "doctor_name":      doctor.get("name"),
+        "specialty":        doctor.get("specialty"),
+    }
+
+
+def create_patient_history_event(
+    patient_id:     str,
+    appointment_id: str,
+    event_type:     str,
+    title:          str,
+    description:    str | None,
+    payload:        dict,
+    added_by_role:  str = "patient",
+) -> dict | None:
+    """
+    Write a structured clinical note to patient_history_events.
+    Used for pre-appointment intake notes and drug warnings.
+
+    event_type values (from your schema CHECK constraint):
+      consultation_note | diagnosis | medication_added | medication_updated |
+      test_ordered | test_result | vitals | document_upload | other
+    """
+    sb   = get_supabase()
+    resp = (
+        sb.table("patient_history_events")
+        .insert({
+            "patient_id":     patient_id,
+            "appointment_id": appointment_id,
+            "event_type":     event_type,
+            "title":          title,
+            "description":    description,
+            "payload":        payload,
+            "added_by_role":  added_by_role,
+        })
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0] if rows else None

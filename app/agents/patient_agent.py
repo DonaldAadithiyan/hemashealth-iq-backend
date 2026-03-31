@@ -108,6 +108,9 @@ async def run_agent(
     selected_doctor_name: str | None = None,
     appointment_id: str | None = None,
     is_emergency: bool = False,
+    mentions_medication: bool = False,
+    is_recurring: bool = False,
+    intake_complete: bool = False,
     conversation_summary: str | None = None,
 ) -> dict:
     """
@@ -139,6 +142,9 @@ async def run_agent(
         messages=context_messages,
         stage=current_stage,
         is_emergency=is_emergency,
+        mentions_medication=mentions_medication,
+        is_recurring=is_recurring,
+        intake_complete=intake_complete,
         detected_specialty=detected_specialty,
         preferred_location=preferred_location,
         selected_slot_id=selected_slot_id,
@@ -176,6 +182,9 @@ async def run_agent(
             "selected_doctor_name":   result.get("selected_doctor_name"),
             "patient_id":             result.get("patient_id"),
             "appointment_id":         result.get("appointment_id"),
+            "mentions_medication":     result.get("mentions_medication", False),
+            "is_recurring":            result.get("is_recurring", False),
+            "intake_complete":         result.get("intake_complete", False),
             "conversation_summary":   new_summary,
         },
     }
