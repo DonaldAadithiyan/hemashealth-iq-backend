@@ -141,6 +141,15 @@ def build_graph():
             for tc in response.tool_calls:
                 _log_tool_call(tc["name"], tc.get("args", {}))
         else:
+            # Unmask any PII tokens in the reply before it's stored in messages
+            # This ensures intermediate replies (e.g. "Welcome back, :::name:::!")
+            # show real values when they appear between tool calls
+            if response.content:
+                unmasked_content = state["vault"].unmask_text(response.content)
+                if unmasked_content != response.content:
+                    print(f"{DIM}│  🔓 PII unmasked in reply ({len(response.content) - len(unmasked_content)} chars replaced){R}")
+                    from langchain_core.messages import AIMessage as _AIMsg
+                    response = _AIMsg(content=unmasked_content)
             preview = str(response.content)[:80].replace("\n", " ")
             print(f"{DIM}│  💬 Reply preview: \"{preview}...\"{R}")
 
@@ -264,11 +273,20 @@ def build_graph():
 
             elif name == "lookup_or_create_patient":
                 if data.get("patient_id"):
-                    extra["patient_id"] = data["patient_id"]
+                    real_patient_id = data["patient_id"]
+                    extra["patient_id"] = real_patient_id
                     extra["stage"]      = "collecting"
-                    vault.register("patient_id",   data["patient_id"])
+                    # Register real values — get the token back to inject into context
+                    patient_token = vault.register("patient_id",   real_patient_id)
                     vault.register("patient_name", data.get("name", ""))
                     vault.register("phone",        data.get("phone", ""))
+
+                    # Embed the patient_id hint inside the masked tool response
+                    # so the LLM knows exactly which token to use for book_appointment.
+                    # We cannot inject a separate SystemMessage here — OpenAI requires
+                    # ToolMessages to immediately follow tool calls with matching IDs.
+                    print(f"{DIM}│  💉 Patient ID token for booking: {patient_token}{R}")
+
                     # Feature 1: flag recurring if last visit specialty matches current
                     last = data.get("last_visit") or {}
                     if last and last.get("specialty") == state.get("detected_specialty"):
@@ -293,6 +311,17 @@ def build_graph():
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
 
+
+            # For lookup_or_create_patient: embed patient_id token hint in the
+            # tool response so the LLM uses it correctly in the next tool call.
+            if name == "lookup_or_create_patient" and data.get("patient_id"):
+                patient_token = vault._to_token.get(data["patient_id"], "")
+                if patient_token:
+                    data = dict(data)
+                    data["_booking_hint"] = (
+                        f"IMPORTANT: Use patient_id={patient_token} "
+                        f"when calling book_appointment. Do not use any other UUID."
+                    )
 
             # Mask real values in response before LLM sees it
             safe_data    = vault.mask_dict(data)
