@@ -103,6 +103,8 @@ class AgentState(TypedDict):
     mentions_medication:     bool
     is_recurring:            bool
     # Slot data from check_availability — used to build SHOW_SLOTS payload
+    routing_tier:            str | None
+    suggested_specialty:     str | None
     available_doctors:       list | None
     fallback_used:           bool
     fallback_reason:         str | None
@@ -291,7 +293,8 @@ def build_graph():
             if name == "route_to_specialist":
                 extra["detected_specialty"]  = data.get("specialty")
                 extra["is_emergency"]        = data.get("is_emergency", False)
-                extra["mentions_medication"] = data.get("mentions_medication", False)
+                extra["mentions_medication"]  = data.get("mentions_medication", False)
+                extra["suggested_specialty"] = data.get("suggested_specialty")
                 routing_tier = data.get("routing_tier", "gp_first")
                 if data.get("is_emergency"):
                     extra["stage"] = "emergency"
