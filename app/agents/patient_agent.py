@@ -110,6 +110,13 @@ async def run_agent(
     is_emergency: bool = False,
     mentions_medication: bool = False,
     is_recurring: bool = False,
+    available_doctors: list | None = None,
+    fallback_used: bool = False,
+    fallback_reason: str | None = None,
+    patient_name: str | None = None,
+    last_visit_date: str | None = None,
+    last_visit_specialty: str | None = None,
+    last_visit_doctor: str | None = None,
     conversation_summary: str | None = None,
 ) -> dict:
     """
@@ -151,6 +158,15 @@ async def run_agent(
         selected_doctor_name=selected_doctor_name,
         patient_id=patient_id,
         appointment_id=appointment_id,
+        mentions_medication=mentions_medication,
+        is_recurring=is_recurring,
+        available_doctors=available_doctors,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        patient_name=patient_name,
+        last_visit_date=last_visit_date,
+        last_visit_specialty=last_visit_specialty,
+        last_visit_doctor=last_visit_doctor,
         vault=vault,
     )
 
@@ -182,6 +198,13 @@ async def run_agent(
             "appointment_id":         result.get("appointment_id"),
             "mentions_medication":     result.get("mentions_medication", False),
             "is_recurring":            result.get("is_recurring", False),
+            "available_doctors":       result.get("available_doctors"),
+            "fallback_used":           result.get("fallback_used", False),
+            "fallback_reason":         result.get("fallback_reason"),
+            "patient_name":            result.get("patient_name"),
+            "last_visit_date":         result.get("last_visit_date"),
+            "last_visit_specialty":    result.get("last_visit_specialty"),
+            "last_visit_doctor":       result.get("last_visit_doctor"),
             "conversation_summary":   new_summary,
         },
     }

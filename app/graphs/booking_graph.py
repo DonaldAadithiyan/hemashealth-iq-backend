@@ -100,6 +100,17 @@ class AgentState(TypedDict):
     selected_doctor_name:   str | None
     patient_id:             str | None
     appointment_id:         str | None
+    mentions_medication:     bool
+    is_recurring:            bool
+    # Slot data from check_availability — used to build SHOW_SLOTS payload
+    available_doctors:       list | None
+    fallback_used:           bool
+    fallback_reason:         str | None
+    # Patient info from lookup — used to build SHOW_PATIENT_FORM payload
+    patient_name:            str | None
+    last_visit_date:         str | None
+    last_visit_specialty:    str | None
+    last_visit_doctor:       str | None
     vault:                  PIIVault      # ← injected per session, never serialised
 
 
@@ -285,12 +296,31 @@ def build_graph():
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
+                # Store raw slot data for ui_payload — mask doctor IDs
+                raw_doctors = data.get("doctors", [])
+                masked_doctors = []
+                for doc in raw_doctors:
+                    masked_doc = dict(doc)
+                    # Mask doctor_id via vault
+                    if doc.get("doctor_id"):
+                        masked_doc["doctor_id"] = vault.register("doctor_id", doc["doctor_id"])
+                    masked_doctors.append(masked_doc)
+                extra["available_doctors"] = masked_doctors
+                extra["fallback_used"]     = data.get("fallback_used", False)
+                extra["fallback_reason"]   = data.get("fallback_reason")
 
             elif name == "lookup_or_create_patient":
                 if data.get("patient_id"):
                     real_patient_id = data["patient_id"]
-                    extra["patient_id"] = real_patient_id
-                    extra["stage"]      = "collecting"
+                    extra["patient_id"]   = real_patient_id
+                    extra["stage"]        = "collecting"
+                    extra["patient_name"] = data.get("name")
+                    # Store last visit info for SHOW_PATIENT_FORM payload
+                    last = data.get("last_visit") or {}
+                    if last:
+                        extra["last_visit_date"]     = (last.get("appointment_date") or "")[:10]
+                        extra["last_visit_specialty"]= last.get("specialty")
+                        extra["last_visit_doctor"]   = last.get("doctor_name")
                     # Register real values — get the token back to inject into context
                     patient_token = vault.register("patient_id",   real_patient_id)
                     vault.register("patient_name", data.get("name", ""))

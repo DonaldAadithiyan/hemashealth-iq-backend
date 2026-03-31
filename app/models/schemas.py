@@ -1,47 +1,116 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 from enum import Enum
+from datetime import datetime
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
-    role: str       # "user" | "assistant"
+    role: str
     content: str
 
 
 class UIAction(str, Enum):
     """
-    Tells the frontend exactly which UI component to render after each response.
-    Read this field on every ChatResponse and switch your UI accordingly.
-
-    SHOW_CHAT          → plain chat bubble, nothing extra
-    SHOW_EMERGENCY     → red emergency banner + 1990 call button (block further input until dismissed)
-    SHOW_SLOTS         → reply contains slot options — render as selectable cards if you want
-    SHOW_PATIENT_FORM  → optionally render a name/phone form instead of free text
-    SHOW_CONFIRMATION  → render booking confirmation card with doctor, date, time, location
-    SHOW_PAYMENT       → appointment confirmed — trigger payment flow
-    SHOW_CANCELLED     → render cancellation confirmation card
+    Tells the frontend which component to render alongside the chat bubble.
+    Read ui_action on every response and switch on it.
+    ui_payload contains the structured data for that component.
     """
-    SHOW_CHAT         = "SHOW_CHAT"
-    SHOW_EMERGENCY    = "SHOW_EMERGENCY"
-    SHOW_SLOTS        = "SHOW_SLOTS"
-    SHOW_PATIENT_FORM = "SHOW_PATIENT_FORM"
-    SHOW_CONFIRMATION = "SHOW_CONFIRMATION"
-    SHOW_PAYMENT      = "SHOW_PAYMENT"
-    SHOW_CANCELLED    = "SHOW_CANCELLED"
-    SHOW_RESCHEDULED     = "SHOW_RESCHEDULED"
+    SHOW_CHAT            = "SHOW_CHAT"           # plain chat bubble, no extra component
+    SHOW_EMERGENCY       = "SHOW_EMERGENCY"       # red banner + 1990 call button
+    SHOW_LOCATION_PICKER = "SHOW_LOCATION_PICKER" # two hospital buttons (Wattala / Thalawathugoda)
+    SHOW_SLOTS           = "SHOW_SLOTS"           # slot picker cards
+    SHOW_PATIENT_FORM    = "SHOW_PATIENT_FORM"    # returning/new patient info
+    SHOW_PAYMENT         = "SHOW_PAYMENT"         # booking confirmation + payment trigger
+    SHOW_CANCELLED       = "SHOW_CANCELLED"       # cancellation confirmation
+    SHOW_RESCHEDULED     = "SHOW_RESCHEDULED"     # reschedule confirmation
 
 
-# Map stage → UIAction — single source of truth
+# ── ui_payload models — one per UIAction ──────────────────────────────────────
+
+class EmergencyPayload(BaseModel):
+    hotline:             str  = "1990"
+    message:             str  = "This sounds like a medical emergency."
+    allow_booking_after: bool = True
+
+
+class LocationButton(BaseModel):
+    value:   str   # "wattala" | "thalawathugoda"  — send this as the next message
+    label:   str   # "Hemas Hospital Wattala"
+    address: str   # "No. 389, Negombo Road, Wattala"
+
+
+class LocationPickerPayload(BaseModel):
+    buttons: list[LocationButton]
+
+
+class SlotOption(BaseModel):
+    slot_id:  str
+    datetime: str
+    label:    str   # human-readable e.g. "Wednesday, April 1 at 9:30 AM"
+
+
+class DoctorSlots(BaseModel):
+    doctor_id:   str
+    doctor_name: str
+    specialty:   str
+    location:    str
+    slots:       list[SlotOption]
+
+
+class SlotsPayload(BaseModel):
+    doctors:        list[DoctorSlots]
+    fallback_used:  bool         = False
+    fallback_reason: Optional[str] = None
+
+
+class LastVisitInfo(BaseModel):
+    date:        str
+    specialty:   str
+    doctor_name: str
+
+
+class PatientFormPayload(BaseModel):
+    is_returning:       bool
+    patient_name:       Optional[str]          = None
+    last_visit:         Optional[LastVisitInfo] = None
+    is_recurring:       bool                   = False
+
+
+class PaymentPayload(BaseModel):
+    appointment_id:     str
+    doctor_name:        str
+    specialty:          str
+    datetime:           str
+    datetime_label:     str
+    location:           str
+    mentions_medication: bool = False
+    is_recurring:       bool  = False
+
+
+class CancelledPayload(BaseModel):
+    appointment_id: str
+
+
+class RescheduledPayload(BaseModel):
+    appointment_id:    str
+    doctor_name:       str
+    new_datetime:      str
+    new_datetime_label: str
+    location:          str
+
+
+# ── Stage → UIAction map ──────────────────────────────────────────────────────
+
 _STAGE_TO_UI: dict[str, UIAction] = {
-    "intake":      UIAction.SHOW_CHAT,
-    "routing":     UIAction.SHOW_CHAT,
-    "emergency":   UIAction.SHOW_EMERGENCY,
-    "slots_shown": UIAction.SHOW_SLOTS,
-    "collecting":  UIAction.SHOW_PATIENT_FORM,
-    "confirmed":   UIAction.SHOW_PAYMENT,
-    "cancelled":   UIAction.SHOW_CANCELLED,
+    "intake":           UIAction.SHOW_CHAT,
+    "routing":          UIAction.SHOW_LOCATION_PICKER,
+    "emergency":        UIAction.SHOW_EMERGENCY,
+    "slots_shown":      UIAction.SHOW_SLOTS,
+    "collecting":       UIAction.SHOW_PATIENT_FORM,
+    "confirmed":        UIAction.SHOW_PAYMENT,
+    "cancelled":        UIAction.SHOW_CANCELLED,
     "rescheduled":      UIAction.SHOW_RESCHEDULED,
 }
 
@@ -49,16 +118,31 @@ def stage_to_ui_action(stage: str) -> UIAction:
     return _STAGE_TO_UI.get(stage, UIAction.SHOW_CHAT)
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_datetime_label(iso_str: str) -> str:
+    """Convert ISO datetime to human-readable label e.g. 'Wednesday, April 2 at 9:30 AM'"""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%A, %B %-d at %-I:%M %p")
+    except Exception:
+        return iso_str
+
+
+LOCATION_LABELS = {
+    "wattala":        ("Hemas Hospital Wattala",        "No. 389, Negombo Road, Wattala"),
+    "thalawathugoda": ("Hemas Hospital Thalawathugoda", "No. 6, Highland Drive, Thalawathugoda, Colombo 10"),
+}
+
+
+# ── BookingState ──────────────────────────────────────────────────────────────
+
 class BookingState(BaseModel):
-    """
-    Booking context the frontend tracks and sends back on every request.
-    Start with all defaults on session open. Update from ChatResponse.state each turn.
-    """
     stage: str = "intake"
     is_emergency: bool = False
 
     detected_specialty:     Optional[str] = None
-    preferred_location:     Optional[str] = None   # "wattala" | "thalawathugoda"
+    preferred_location:     Optional[str] = None
 
     selected_slot_id:       Optional[str] = None
     selected_slot_datetime: Optional[str] = None
@@ -67,59 +151,45 @@ class BookingState(BaseModel):
 
     patient_id:             Optional[str] = None
     appointment_id:         Optional[str] = None
-    mentions_medication:    bool = False   # patient mentioned current medications
-    is_recurring:           bool = False   # symptom matches a previous visit
-
-    # Conversation summary — set by the summarizer after SUMMARIZE_AFTER_TURNS turns.
-    # Replaces old messages in the context window. Frontend stores and sends back as-is.
+    mentions_medication:    bool = False
+    is_recurring:           bool = False
     conversation_summary:   Optional[str] = None
+
+    # Slot data — stored from check_availability result, used to build SHOW_SLOTS payload
+    available_doctors:      Optional[list[dict]] = None
+    fallback_used:          bool = False
+    fallback_reason:        Optional[str] = None
+
+    # Patient info — stored from lookup result, used to build SHOW_PATIENT_FORM payload
+    patient_name:           Optional[str] = None
+    last_visit_date:        Optional[str] = None
+    last_visit_specialty:   Optional[str] = None
+    last_visit_doctor:      Optional[str] = None
 
 
 class ChatRequest(BaseModel):
-    session_id: str = Field(..., description="UUID for this conversation — generate once on session open")
-    message:    str = Field(..., description="Latest message from the patient")
-    history:    list[ChatMessage] = Field(
-        default=[],
-        description="Full conversation so far, NOT including the current message. Frontend maintains this.",
-    )
-    booking_state: BookingState = Field(
-        default_factory=BookingState,
-        description="Booking state from the previous response. Send back exactly as received.",
-    )
+    session_id:    str           = Field(..., description="UUID — generate once per conversation")
+    message:       str           = Field(..., description="Patient's latest message")
+    history:       list[ChatMessage] = Field(default=[])
+    booking_state: BookingState  = Field(default_factory=BookingState)
 
 
 class ChatResponse(BaseModel):
     session_id: str
-
-    reply: str = Field(
-        ...,
-        description="Agent reply text. Always display this as the assistant chat bubble.",
-    )
-
-    ui_action: UIAction = Field(
-        ...,
-        description=(
-            "Tells the frontend which UI to render alongside the reply. "
-            "Switch on this field to decide what component to show. "
-            "See UIAction enum for all possible values and what each means."
-        ),
-    )
-
-    state: BookingState = Field(
-        ...,
-        description="Updated booking state. Store this and send it back as booking_state on the next request.",
-    )
+    reply:      str       = Field(..., description="Always display as assistant chat bubble")
+    ui_action:  UIAction  = Field(..., description="Which component to render — switch on this")
+    ui_payload: Optional[Any] = Field(None, description="Structured data for the component. Shape depends on ui_action.")
+    state:      BookingState  = Field(..., description="Save and send back as booking_state next request")
 
 
-# ── Appointments (dashboard endpoints) ───────────────────────────────────────
+# ── Appointments ──────────────────────────────────────────────────────────────
 
 class AppointmentStatus(str, Enum):
-    # Values match your Supabase appointments.status CHECK constraint exactly
-    reserved      = "reserved"
-    confirmed     = "confirmed"
-    paid          = "paid"
-    cancelled     = "cancelled"
-    not_attended  = "not_attended"
+    reserved     = "reserved"
+    confirmed    = "confirmed"
+    paid         = "paid"
+    cancelled    = "cancelled"
+    not_attended = "not_attended"
 
 
 class AppointmentOut(BaseModel):
@@ -131,7 +201,6 @@ class AppointmentOut(BaseModel):
     reason_for_visit: Optional[str] = None
     notes:            Optional[str] = None
     created_at:       Optional[str] = None
-    # Joined fields
     doctor_name:      Optional[str] = None
     doctor_specialty: Optional[str] = None
     location:         Optional[str] = None
@@ -142,7 +211,7 @@ class CancelRequest(BaseModel):
 
 
 class RescheduleRequest(BaseModel):
-    new_slot_id:    str = Field(..., description="Synthetic slot ID from check_availability: doctor_id::YYYY-MM-DDTHH:MM")
+    new_slot_id:    str = Field(..., description="Synthetic slot ID: doctor_id::YYYY-MM-DDTHH:MM")
     new_doctor_id:  str = Field(..., description="UUID of the doctor for the new slot")
     rescheduled_by: str = Field(..., description="'patient' | 'admin' | 'doctor'")
 
