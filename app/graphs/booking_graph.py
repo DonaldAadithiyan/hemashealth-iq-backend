@@ -28,7 +28,6 @@ from app.tools.routing import route_to_specialist
 from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
 from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
-from app.tools.intake import store_intake_note
 from app.utils.pii_vault import PIIVault
 
 ALL_TOOLS = [
@@ -38,7 +37,6 @@ ALL_TOOLS = [
     book_appointment,
     cancel_appointment,
     reschedule_appointment,
-    store_intake_note,
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
@@ -59,7 +57,6 @@ TOOL_COLOURS = {
     "book_appointment":         GREEN,
     "cancel_appointment":       RED,
     "reschedule_appointment":   CYAN,
-    "store_intake_note":        GREEN,
 }
 
 def _log_node(name: str, colour: str = CYAN):
@@ -296,11 +293,6 @@ def build_graph():
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
 
-            elif name == "store_intake_note":
-                if data.get("success"):
-                    extra["intake_complete"] = True
-                    extra["stage"]           = "intake_complete"
-                    print(f"{GREEN}│  📋 INTAKE NOTE SAVED: event_id={data.get('event_id')}{R}")
 
             # Mask real values in response before LLM sees it
             safe_data    = vault.mask_dict(data)
