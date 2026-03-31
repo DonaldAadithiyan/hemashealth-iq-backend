@@ -190,11 +190,26 @@ def build_graph():
             if total_unmasked:
                 _log_pii("unmasked", total_unmasked)
 
+            # For book_appointment: always override patient_id with the real value
+            # stored in state. This prevents the LLM from using a stale UUID from
+            # context (e.g. a seed doctor ID) instead of the correct patient UUID.
+            corrected_tool_calls = []
+            for tc in unmasked_tool_calls:
+                if tc.get("name") == "book_appointment":
+                    args = dict(tc.get("args", {}))
+                    real_pid = state.get("patient_id")
+                    if real_pid and args.get("patient_id") != real_pid:
+                        print(f"{YELLOW}│  🔧 CORRECTING patient_id: {args.get('patient_id','?')[:20]}... → {real_pid[:20]}...{R}")
+                        args["patient_id"] = real_pid
+                    corrected_tool_calls.append({**tc, "args": args})
+                else:
+                    corrected_tool_calls.append(tc)
+
             # Rebuild last message with real args so tool_node executes correctly
             from langchain_core.messages import AIMessage as _AI
             real_ai_msg = _AI(
                 content    = last_ai_msg.content,
-                tool_calls = unmasked_tool_calls,
+                tool_calls = corrected_tool_calls,
             )
             # Temporarily swap the last message
             patched_messages = list(state["messages"][:-1]) + [real_ai_msg]
