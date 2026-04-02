@@ -104,6 +104,23 @@ class RescheduledPayload(BaseModel):
     location:          str
 
 
+class NavigationSnapshot(BaseModel):
+    """A saved checkpoint of booking state for navigation rewind."""
+    stage:                  str
+    checkpoint:             str             # "specialty" | "location" | "slot"
+    detected_specialty:     Optional[str] = None
+    preferred_location:     Optional[str] = None
+    available_doctors:      Optional[list] = None
+    fallback_used:          bool = False
+    fallback_reason:        Optional[str] = None
+    pending_slot_id:        Optional[str] = None
+    pending_slot_datetime:  Optional[str] = None
+    pending_doctor_name:    Optional[str] = None
+    pending_doctor_id:      Optional[str] = None
+    pending_specialty:      Optional[str] = None
+    pending_location:       Optional[str] = None
+
+
 class PhoneChoicePayload(BaseModel):
     logged_in_phone: str   # e.g. "+94773609683" — send this as next message if tapped
     logged_in_label: str   # e.g. "Use my number (+94773609683)"
@@ -194,6 +211,9 @@ class BookingState(BaseModel):
     available_doctors:      Optional[list[dict]] = None
     fallback_used:          bool = False
     fallback_reason:        Optional[str] = None
+
+    # Navigation stack — checkpoints for going back
+    navigation_stack:       Optional[list] = None
 
     # Logged-in user's phone — sent by frontend, used to skip phone-number question
     user_phone: Optional[str] = None

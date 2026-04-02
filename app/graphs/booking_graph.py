@@ -103,6 +103,7 @@ class AgentState(TypedDict):
     mentions_medication:     bool
     is_recurring:            bool
     # Slot data from check_availability — used to build SHOW_SLOTS payload
+    navigation_stack:          list | None
     user_phone:                str | None
     routing_tier:              str | None
     suggested_specialty:       str | None
@@ -369,9 +370,41 @@ def build_graph():
                     extra["stage"] = "routing"
                     tier_label = "DIRECT → specialist" if routing_tier == "direct" else "GP-FIRST → General Medicine"
                     print(f"{YELLOW}│  🏥 ROUTING TIER: {tier_label}{R}")
+                    # Push specialty snapshot
+                    current_stack = list(state.get("navigation_stack") or [])
+                    current_stack = [s for s in current_stack if isinstance(s, dict) and s.get("checkpoint") != "specialty"]
+                    current_stack.append({
+                        "checkpoint":        "specialty",
+                        "stage":             "intake",
+                        "detected_specialty":data.get("specialty"),
+                        "preferred_location":None,
+                        "available_doctors": None, "fallback_used": False,
+                        "fallback_reason":   None,
+                        "pending_slot_id":   None, "pending_slot_datetime": None,
+                        "pending_doctor_name": None, "pending_doctor_id": None,
+                        "pending_specialty": None, "pending_location": None,
+                    })
+                    extra["navigation_stack"] = current_stack
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
+                # Push navigation snapshot for location checkpoint
+                current_stack = list(state.get("navigation_stack") or [])
+                # Remove any existing location/slot snapshots (we're re-entering this step)
+                current_stack = [s for s in current_stack if isinstance(s, dict) and s.get("checkpoint") not in ("location", "slot")]
+                current_stack.append({
+                    "checkpoint":        "location",
+                    "stage":             "routing",
+                    "detected_specialty":state.get("detected_specialty"),
+                    "preferred_location":state.get("preferred_location"),
+                    "available_doctors": None,
+                    "fallback_used":     False,
+                    "fallback_reason":   None,
+                    "pending_slot_id":   None, "pending_slot_datetime": None,
+                    "pending_doctor_name": None, "pending_doctor_id": None,
+                    "pending_specialty": None, "pending_location": None,
+                })
+                extra["navigation_stack"] = current_stack
                 extra["pending_slot_id"] = None
                 extra["pending_slot_datetime"] = None
                 extra["pending_doctor_name"] = None
