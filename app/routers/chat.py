@@ -234,22 +234,24 @@ async def chat(req: ChatRequest):
     new_state  = BookingState(**result["state"])
     ui_action  = stage_to_ui_action(new_state.stage)
 
-    # Override: if agent is asking for slot confirmation and pending slot is set,
-    # show SHOW_CONFIRM_BOOKING regardless of stage
+    # Override: show SHOW_CONFIRM_BOOKING only when agent is actively asking to confirm
+    # Check both state AND that reply contains confirmation language
     if (new_state.stage == "slots_shown"
         and new_state.pending_slot_id
         and new_state.pending_doctor_name):
-        ui_action = UIAction.SHOW_CONFIRM_BOOKING
+        reply_lower = result["reply"].lower()
+        is_confirming = any(kw in reply_lower for kw in [
+            "shall i confirm", "confirm this booking", "shall i proceed with booking"
+        ])
+        if is_confirming:
+            ui_action = UIAction.SHOW_CONFIRM_BOOKING
 
     # Override: show phone choice when user_phone is available and agent just asked for phone
-    # Detected when stage transitions to collecting with no patient_id yet
-    if (ui_action == UIAction.SHOW_PATIENT_FORM
-        and new_state.user_phone
+    if (new_state.user_phone
         and not new_state.patient_id
         and new_state.stage == "collecting"):
-        # Check if the reply is asking for phone number
         reply_lower = result["reply"].lower()
-        if any(kw in reply_lower for kw in ["phone number", "phone", "registered", "number"]):
+        if any(kw in reply_lower for kw in ["phone number", "which number", "registered", "number should i use"]):
             ui_action = UIAction.SHOW_PHONE_CHOICE
 
     ui_payload = _build_payload(ui_action, new_state)

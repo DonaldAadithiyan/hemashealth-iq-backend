@@ -158,7 +158,24 @@ def build_graph():
         print(f"{DIM}│  📍 Stage: {YELLOW}{state.get('stage', 'intake')}{R}")
         print(f"{DIM}│  🔒 Vault tokens registered: {state['vault'].debug_summary()['total_tokens']}{R}")
 
-        response = llm.invoke([SystemMessage(content=SYSTEM_PROMPT)] + state["messages"])
+        # Build context with slot lookup injected as system context
+        # so agent knows slot datetimes when patient sends a slot_id
+        system_messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        if state.get("stage") == "slots_shown":
+            doctors = state.get("available_doctors") or []
+            slot_lines = []
+            for doc in doctors:
+                for slot in doc.get("slots", []):
+                    sid = slot.get("slot_id", "")
+                    dt  = slot.get("datetime", "")
+                    lbl = slot.get("label", dt)
+                    if sid:
+                        slot_lines.append(f"{sid} → {lbl}")
+            if slot_lines:
+                hint = "[Slot reference — use these datetimes when patient selects a slot]\n" + "\n".join(slot_lines[:10])
+                system_messages.append(SystemMessage(content=hint))
+
+        response = llm.invoke(system_messages + state["messages"])
 
         if hasattr(response, "tool_calls") and response.tool_calls:
             for tc in response.tool_calls:
@@ -355,13 +372,25 @@ def build_graph():
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
-                # Clear any pending slot from a previous check
                 extra["pending_slot_id"] = None
                 extra["pending_slot_datetime"] = None
                 extra["pending_doctor_name"] = None
                 extra["pending_doctor_id"] = None
                 extra["pending_specialty"] = None
                 extra["pending_location"] = None
+                # Build a slot_id → label lookup and inject into data
+                # so the agent can resolve slot_ids to human-readable times
+                slot_lookup = {}
+                for doc in data.get("doctors", []):
+                    for slot in doc.get("slots", []):
+                        sid = slot.get("slot_id", "")
+                        dt  = slot.get("datetime", "")
+                        if sid and dt:
+                            slot_lookup[sid] = dt
+                if slot_lookup:
+                    data = dict(data)
+                    data["_slot_datetime_lookup"] = slot_lookup
+                    print(f"{DIM}│  🗓  Slot lookup injected: {len(slot_lookup)} entries{R}")
                 # Store raw slot data for ui_payload — mask doctor IDs
                 raw_doctors = data.get("doctors", [])
                 masked_doctors = []
