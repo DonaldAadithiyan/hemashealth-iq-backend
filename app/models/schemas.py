@@ -24,7 +24,10 @@ class UIAction(str, Enum):
     SHOW_PATIENT_FORM    = "SHOW_PATIENT_FORM"    # returning/new patient info
     SHOW_PAYMENT         = "SHOW_PAYMENT"         # booking confirmation + payment trigger
     SHOW_CANCELLED       = "SHOW_CANCELLED"       # cancellation confirmation
-    SHOW_RESCHEDULED     = "SHOW_RESCHEDULED"     # reschedule confirmation
+    SHOW_RESCHEDULED       = "SHOW_RESCHEDULED"       # reschedule confirmation
+    SHOW_SPECIALTY_CHOICE  = "SHOW_SPECIALTY_CHOICE"  # specialist vs GP choice buttons
+    SHOW_CONFIRM_BOOKING   = "SHOW_CONFIRM_BOOKING"   # confirm booking button
+    SHOW_PHONE_CHOICE      = "SHOW_PHONE_CHOICE"      # use logged-in number vs different number
 
 
 # ── ui_payload models — one per UIAction ──────────────────────────────────────
@@ -101,17 +104,47 @@ class RescheduledPayload(BaseModel):
     location:          str
 
 
+class PhoneChoicePayload(BaseModel):
+    logged_in_phone: str   # e.g. "+94773609683" — send this as next message if tapped
+    logged_in_label: str   # e.g. "Use my number (+94773609683)"
+    other_label:     str   # e.g. "Use a different number"
+
+
+class SpecialtyChoiceButton(BaseModel):
+    value:    str   # "specialist" | "gp" — send this as next message
+    label:    str   # "Book with Neurologist" | "Book with General Medicine"
+    specialty: str  # actual specialty string to use
+
+
+class SpecialtyChoicePayload(BaseModel):
+    buttons:            list[SpecialtyChoiceButton]
+    suggested_specialty: str
+    reason:             str   # e.g. "Your symptoms suggest a possible migraine."
+
+
+class ConfirmBookingPayload(BaseModel):
+    doctor_name:    str
+    specialty:      str
+    datetime_label: str
+    location:       str
+    slot_id:        str   # frontend sends this as message when patient confirms
+
+
 # ── Stage → UIAction map ──────────────────────────────────────────────────────
 
 _STAGE_TO_UI: dict[str, UIAction] = {
     "intake":           UIAction.SHOW_CHAT,
     "routing":          UIAction.SHOW_LOCATION_PICKER,
+    "clarify":          UIAction.SHOW_CHAT,   # agent asks one question, no extra component
     "emergency":        UIAction.SHOW_EMERGENCY,
     "slots_shown":      UIAction.SHOW_SLOTS,
     "collecting":       UIAction.SHOW_PATIENT_FORM,
     "confirmed":        UIAction.SHOW_PAYMENT,
     "cancelled":        UIAction.SHOW_CANCELLED,
-    "rescheduled":      UIAction.SHOW_RESCHEDULED,
+    "rescheduled":       UIAction.SHOW_RESCHEDULED,
+    "specialty_choice":  UIAction.SHOW_SPECIALTY_CHOICE,
+    "phone_choice":      UIAction.SHOW_PHONE_CHOICE,
+    "confirming":        UIAction.SHOW_CONFIRM_BOOKING,
 }
 
 def stage_to_ui_action(stage: str) -> UIAction:
@@ -153,12 +186,30 @@ class BookingState(BaseModel):
     appointment_id:         Optional[str] = None
     mentions_medication:    bool = False
     is_recurring:           bool = False
+    routing_tier:           Optional[str] = None   # "direct" | "gp_first" | "clarify" | "emergency"
+    suggested_specialty:    Optional[str] = None   # for gp_first: specialist GP may refer to
     conversation_summary:   Optional[str] = None
 
     # Slot data — stored from check_availability result, used to build SHOW_SLOTS payload
     available_doctors:      Optional[list[dict]] = None
     fallback_used:          bool = False
     fallback_reason:        Optional[str] = None
+
+    # Logged-in user's phone — sent by frontend, used to skip phone-number question
+    user_phone: Optional[str] = None
+
+    # Specialty choice — pending when agent narrowed down from gp_first
+    specialty_choice_pending: bool = False
+    specialty_choice_options: Optional[list[dict]] = None   # [{value, label, specialty}]
+    specialty_choice_reason:  Optional[str] = None
+
+    # Confirm booking — pending slot details for the confirm button
+    pending_slot_id:        Optional[str] = None
+    pending_slot_datetime:  Optional[str] = None
+    pending_doctor_name:    Optional[str] = None
+    pending_doctor_id:      Optional[str] = None
+    pending_specialty:      Optional[str] = None
+    pending_location:       Optional[str] = None
 
     # Patient info — stored from lookup result, used to build SHOW_PATIENT_FORM payload
     patient_name:           Optional[str] = None
@@ -170,6 +221,7 @@ class BookingState(BaseModel):
 class ChatRequest(BaseModel):
     session_id:    str           = Field(..., description="UUID — generate once per conversation")
     message:       str           = Field(..., description="Patient's latest message")
+    user_phone:    Optional[str] = Field(None, description="Logged-in user's phone from Supabase auth. Send on every request when available.")
     history:       list[ChatMessage] = Field(default=[])
     booking_state: BookingState  = Field(default_factory=BookingState)
 

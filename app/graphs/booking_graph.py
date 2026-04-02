@@ -103,8 +103,18 @@ class AgentState(TypedDict):
     mentions_medication:     bool
     is_recurring:            bool
     # Slot data from check_availability — used to build SHOW_SLOTS payload
-    routing_tier:            str | None
-    suggested_specialty:     str | None
+    user_phone:                str | None
+    routing_tier:              str | None
+    suggested_specialty:       str | None
+    specialty_choice_pending:  bool
+    specialty_choice_options:  list | None
+    specialty_choice_reason:   str | None
+    pending_slot_id:           str | None
+    pending_slot_datetime:     str | None
+    pending_doctor_name:       str | None
+    pending_doctor_id:         str | None
+    pending_specialty:         str | None
+    pending_location:          str | None
     available_doctors:       list | None
     fallback_used:           bool
     fallback_reason:         str | None
@@ -154,9 +164,6 @@ def build_graph():
             for tc in response.tool_calls:
                 _log_tool_call(tc["name"], tc.get("args", {}))
         else:
-            # Unmask any PII tokens in the reply before it's stored in messages
-            # This ensures intermediate replies (e.g. "Welcome back, :::name:::!")
-            # show real values when they appear between tool calls
             if response.content:
                 unmasked_content = state["vault"].unmask_text(response.content)
                 if unmasked_content != response.content:
@@ -165,6 +172,40 @@ def build_graph():
                     response = _AIMsg(content=unmasked_content)
             preview = str(response.content)[:80].replace("\n", " ")
             print(f"{DIM}│  💬 Reply preview: \"{preview}...\"{R}")
+
+            # Detect slot confirmation question → store pending slot for SHOW_CONFIRM_BOOKING
+            reply_lower = str(response.content).lower()
+            is_confirm_question = (
+                "shall i confirm" in reply_lower
+                or "shall i proceed" in reply_lower
+                or "confirm this booking" in reply_lower
+            )
+            if is_confirm_question and state.get("stage") == "slots_shown":
+                # Find the most recently selected slot from available_doctors
+                doctors = state.get("available_doctors") or []
+                # Try to extract slot info from the reply text (agent mentions doctor + time)
+                # We store the first available slot as pending — agent will have
+                # mentioned the specific one in its reply
+                slot_found = False
+                for doc in doctors:
+                    for slot in doc.get("slots", []):
+                        if slot.get("slot_id") and not slot_found:
+                            # Check if this slot's datetime is mentioned in the reply
+                            slot_dt = slot.get("datetime", "")
+                            slot_time = slot_dt[11:16] if len(slot_dt) > 10 else ""
+                            if slot_time and slot_time in str(response.content):
+                                _log_stage(state.get("stage",""), "confirming")
+                                extra = {
+                                    "pending_slot_id":      slot.get("slot_id"),
+                                    "pending_slot_datetime":slot.get("datetime"),
+                                    "pending_doctor_name":  doc.get("doctor_name"),
+                                    "pending_doctor_id":    doc.get("doctor_id"),
+                                    "pending_specialty":    doc.get("specialty"),
+                                    "pending_location":     doc.get("location"),
+                                }
+                                print(f"{GREEN}│  🔒 Pending slot stored for confirm button: {slot.get('slot_id','')[:30]}{R}")
+                                _log_node_end()
+                                return {"messages": [response], **extra}
 
         _log_node_end()
         return {"messages": [response]}
@@ -203,20 +244,19 @@ def build_graph():
             if total_unmasked:
                 _log_pii("unmasked", total_unmasked)
 
-            # For book_appointment: always override patient_id with the real value
-            # stored in state. This prevents the LLM from using a stale UUID from
-            # context (e.g. a seed doctor ID) instead of the correct patient UUID.
+            # Intercept tool calls for corrections and pending slot capture
             corrected_tool_calls = []
             for tc in unmasked_tool_calls:
+                args = dict(tc.get("args", {}))
+
                 if tc.get("name") == "book_appointment":
-                    args = dict(tc.get("args", {}))
+                    # Override patient_id from state — LLM may pick wrong UUID
                     real_pid = state.get("patient_id")
                     if real_pid and args.get("patient_id") != real_pid:
                         print(f"{YELLOW}│  🔧 CORRECTING patient_id: {args.get('patient_id','?')[:20]}... → {real_pid[:20]}...{R}")
                         args["patient_id"] = real_pid
-                    corrected_tool_calls.append({**tc, "args": args})
-                else:
-                    corrected_tool_calls.append(tc)
+
+                corrected_tool_calls.append({**tc, "args": args})
 
             # Rebuild last message with real args so tool_node executes correctly
             from langchain_core.messages import AIMessage as _AI
@@ -299,17 +339,29 @@ def build_graph():
                 if data.get("is_emergency"):
                     extra["stage"] = "emergency"
                 elif routing_tier == "clarify":
-                    # Stay on intake — agent asks follow-up, does not show location picker yet
                     extra["stage"] = "intake"
                     print(f"{YELLOW}│  ❓ CLARIFY: symptoms too vague — agent will ask follow-up{R}")
+                elif routing_tier == "specialty_choice":
+                    # Agent narrowed down — show specialist vs GP choice buttons
+                    extra["stage"] = "specialty_choice"
+                    extra["specialty_choice_pending"] = True
+                    extra["specialty_choice_options"] = data.get("choice_options", [])
+                    extra["specialty_choice_reason"]  = data.get("choice_reason", "")
+                    print(f"{YELLOW}│  🔀 SPECIALTY CHOICE: {data.get('choice_reason','')}{R}")
                 else:
-                    # "direct" or "gp_first" — both proceed to routing (show location picker)
                     extra["stage"] = "routing"
                     tier_label = "DIRECT → specialist" if routing_tier == "direct" else "GP-FIRST → General Medicine"
                     print(f"{YELLOW}│  🏥 ROUTING TIER: {tier_label}{R}")
 
             elif name == "check_availability":
                 extra["stage"] = "slots_shown"
+                # Clear any pending slot from a previous check
+                extra["pending_slot_id"] = None
+                extra["pending_slot_datetime"] = None
+                extra["pending_doctor_name"] = None
+                extra["pending_doctor_id"] = None
+                extra["pending_specialty"] = None
+                extra["pending_location"] = None
                 # Store raw slot data for ui_payload — mask doctor IDs
                 raw_doctors = data.get("doctors", [])
                 masked_doctors = []
