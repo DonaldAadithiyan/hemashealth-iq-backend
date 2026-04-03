@@ -5,10 +5,13 @@ All tools import from here when running against the real database.
 The methods mirror what mock_db.py provides so the tools don't change their call signatures.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone, date as dt_date
 from functools import lru_cache
 from supabase import create_client, Client
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache()
@@ -363,6 +366,22 @@ def create_patient(name: str, phone: str, email: str | None) -> dict:
 
 # ── Appointments ──────────────────────────────────────────────────────────────
 
+def _get_patient_dob(patient_id: str) -> dt_date | None:
+    """Fetch date_of_birth for a patient (used to compute age for ML)."""
+    sb = get_supabase()
+    resp = (
+        sb.table("patients")
+        .select("date_of_birth")
+        .eq("id", patient_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if rows and rows[0].get("date_of_birth"):
+        return dt_date.fromisoformat(rows[0]["date_of_birth"])
+    return None
+
+
 def create_appointment(
     patient_id:       str,
     doctor_id:        str,
@@ -396,7 +415,49 @@ def create_appointment(
         })
         .execute()
     )
-    return resp.data[0] if resp.data else None
+    appt = resp.data[0] if resp.data else None
+
+    if appt:
+        _run_noshow_prediction(appt["id"], patient_id, appointment_date)
+
+    return appt
+
+
+def _run_noshow_prediction(
+    appointment_id: str,
+    patient_id: str,
+    appointment_date_str: str,
+) -> None:
+    """Fire-and-forget no-show prediction after inserting the appointment."""
+    try:
+        from app.ml.noshow_predictor import predict_no_show
+
+        appt_dt = datetime.fromisoformat(appointment_date_str)
+        if appt_dt.tzinfo is None:
+            appt_dt = appt_dt.replace(tzinfo=timezone.utc)
+
+        dob = _get_patient_dob(patient_id)
+        age: float | None = None
+        if dob:
+            age = (appt_dt.date() - dob).days / 365.25
+
+        booking_time = datetime.now(timezone.utc)
+
+        result = predict_no_show(
+            appointment_id=appointment_id,
+            patient_age_years=age,
+            sms_reminder_received=0,
+            appointment_date=appt_dt,
+            booking_time=booking_time,
+        )
+        logger.info(
+            "No-show prediction for %s: prob=%.4f predicted=%s",
+            appointment_id,
+            result["no_show_probability"],
+            result["no_show_predicted"],
+        )
+    except Exception:
+        logger.exception("No-show prediction failed for appointment %s", appointment_id)
 
 
 def get_appointment(appointment_id: str) -> dict | None:

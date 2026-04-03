@@ -3,8 +3,9 @@ Appointment endpoints consumed by the Next.js dashboards.
 Data source: app/db/supabase.py — real Supabase schema.
 """
 
-from datetime import date as dt_date
-from fastapi import APIRouter, HTTPException, Query
+import logging
+from datetime import date as dt_date, datetime, timezone
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from app.db.supabase import (
     get_appointment,
     get_appointments_for_patient,
@@ -14,15 +15,24 @@ from app.db.supabase import (
     reschedule_appointment_db,
     get_doctor,
     parse_synthetic_slot_id,
+    _get_patient_dob,
 )
 from pydantic import BaseModel
 from typing import Optional
 from app.models.schemas import AppointmentOut, CancelRequest, RescheduleRequest, AppointmentStatus
 
+logger = logging.getLogger(__name__)
+
 
 class PaymentStatusRequest(BaseModel):
     status:      str            # "paid" | "confirmed"
     payment_ref: Optional[str] = None  # payment gateway transaction ID (Stripe charge ID, PayHere txn, etc.)
+
+
+class PredictNoShowRequest(BaseModel):
+    appointment_id: str
+    patient_id: str
+    appointment_date: str
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 
@@ -177,3 +187,40 @@ def cancel_appointment_endpoint(appointment_id: str, body: CancelRequest):
 
     update_appointment_status(appointment_id, "cancelled")
     return {"success": True, "appointment_id": appointment_id}
+
+
+# ── No-show prediction (called by Next.js after direct Supabase insert) ──────
+
+@router.post("/predict-noshow")
+def predict_noshow_endpoint(body: PredictNoShowRequest, bg: BackgroundTasks):
+    """
+    Run the no-show model for an appointment that was created outside
+    the Python backend (e.g. receptionist dashboard inserting directly
+    into Supabase).  Returns immediately; prediction runs in background.
+    """
+    from app.ml.noshow_predictor import predict_no_show
+
+    try:
+        appt_dt = datetime.fromisoformat(body.appointment_date)
+        if appt_dt.tzinfo is None:
+            appt_dt = appt_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid appointment_date ISO format")
+
+    dob = _get_patient_dob(body.patient_id)
+    age: float | None = None
+    if dob:
+        age = (appt_dt.date() - dob).days / 365.25
+
+    booking_time = datetime.now(timezone.utc)
+
+    bg.add_task(
+        predict_no_show,
+        appointment_id=body.appointment_id,
+        patient_age_years=age,
+        sms_reminder_received=0,
+        appointment_date=appt_dt,
+        booking_time=booking_time,
+    )
+
+    return {"queued": True, "appointment_id": body.appointment_id}
