@@ -29,6 +29,9 @@ from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
 from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
 from app.utils.pii_vault import PIIVault
+from app.tools.specialty_choice import signal_specialty_choice
+from app.tools.rewind import rewind_booking
+from app.tools.payment import confirm_payment
 
 ALL_TOOLS = [
     route_to_specialist,
@@ -37,6 +40,9 @@ ALL_TOOLS = [
     book_appointment,
     cancel_appointment,
     reschedule_appointment,
+    signal_specialty_choice,
+    rewind_booking,
+    confirm_payment,
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
@@ -57,6 +63,9 @@ TOOL_COLOURS = {
     "book_appointment":         GREEN,
     "cancel_appointment":       RED,
     "reschedule_appointment":   CYAN,
+    "signal_specialty_choice":  MAGENTA,
+    "rewind_booking":           YELLOW,
+    "confirm_payment":          GREEN,
 }
 
 def _log_node(name: str, colour: str = CYAN):
@@ -502,6 +511,70 @@ def build_graph():
                     extra["selected_slot_datetime"] = data.get("new_slot_datetime")
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
+
+            elif name == "signal_specialty_choice":
+                if data.get("choice_pending"):
+                    specialist = data.get("specialist", "")
+                    reason     = data.get("reason", "")
+                    extra["stage"]                    = "specialty_choice"
+                    extra["specialty_choice_pending"] = True
+                    extra["suggested_specialty"]      = specialist
+                    extra["specialty_choice_reason"]  = reason
+                    extra["detected_specialty"]       = specialist
+                    extra["specialty_choice_options"] = [
+                        {"value": "specialist", "label": f"Book with {specialist}", "specialty": specialist},
+                        {"value": "gp",         "label": "Book with General Medicine", "specialty": "General Medicine"},
+                    ]
+                    print(f"{MAGENTA}│  🔀 SPECIALTY CHOICE: {specialist} — {reason[:50]}{R}")
+
+            elif name == "rewind_booking":
+                if data.get("rewound"):
+                    target = data.get("target", "slot")
+                    stack  = list(state.get("navigation_stack") or [])
+                    print(f"{YELLOW}│  ↩ REWIND to: {target}{R}")
+                    if target == "start":
+                        extra.update({
+                            "stage": "intake",
+                            "detected_specialty": None, "preferred_location": None,
+                            "available_doctors": None, "fallback_used": False,
+                            "fallback_reason": None, "pending_slot_id": None,
+                            "pending_slot_datetime": None, "pending_doctor_name": None,
+                            "pending_doctor_id": None, "pending_specialty": None,
+                            "pending_location": None, "selected_slot_id": None,
+                            "selected_slot_datetime": None, "selected_doctor_id": None,
+                            "selected_doctor_name": None, "navigation_stack": [],
+                        })
+                    else:
+                        snap = None
+                        new_stack = []
+                        for s in stack:
+                            if isinstance(s, dict) and s.get("checkpoint") == target:
+                                snap = s
+                            elif snap is None:
+                                new_stack.append(s)
+                        if snap:
+                            extra.update({
+                                "stage":                  snap.get("stage", "routing"),
+                                "detected_specialty":     snap.get("detected_specialty"),
+                                "preferred_location":     snap.get("preferred_location"),
+                                "available_doctors":      snap.get("available_doctors"),
+                                "fallback_used":          snap.get("fallback_used", False),
+                                "fallback_reason":        snap.get("fallback_reason"),
+                                "pending_slot_id":        None,
+                                "pending_slot_datetime":  None,
+                                "pending_doctor_name":    None,
+                                "pending_doctor_id":      None,
+                                "pending_specialty":      None,
+                                "pending_location":       None,
+                                "navigation_stack":       new_stack,
+                            })
+                        else:
+                            extra["stage"] = "routing"
+
+            elif name == "confirm_payment":
+                if data.get("success"):
+                    extra["stage"] = "paid"
+                    print(f"{GREEN}│  💳 PAYMENT CONFIRMED: {data.get('appointment_id','')[:30]}{R}")
 
 
             # For lookup_or_create_patient: embed patient_id token hint in the

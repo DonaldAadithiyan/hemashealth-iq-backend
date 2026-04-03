@@ -28,6 +28,7 @@ class UIAction(str, Enum):
     SHOW_SPECIALTY_CHOICE  = "SHOW_SPECIALTY_CHOICE"  # specialist vs GP choice buttons
     SHOW_CONFIRM_BOOKING   = "SHOW_CONFIRM_BOOKING"   # confirm booking button
     SHOW_PHONE_CHOICE      = "SHOW_PHONE_CHOICE"      # use logged-in number vs different number
+    SHOW_PAID              = "SHOW_PAID"              # payment confirmed — show receipt
 
 
 # ── ui_payload models — one per UIAction ──────────────────────────────────────
@@ -146,6 +147,13 @@ class ConfirmBookingPayload(BaseModel):
     location:       str
     slot_id:        str   # frontend sends this as message when patient confirms
 
+class PaidPayload(BaseModel):
+    appointment_id: str
+    doctor_name:    str
+    datetime_label: str
+    location:       str
+    specialty:      str
+
 
 # ── Stage → UIAction map ──────────────────────────────────────────────────────
 
@@ -161,6 +169,7 @@ _STAGE_TO_UI: dict[str, UIAction] = {
     "rescheduled":       UIAction.SHOW_RESCHEDULED,
     "specialty_choice":  UIAction.SHOW_SPECIALTY_CHOICE,
     "phone_choice":      UIAction.SHOW_PHONE_CHOICE,
+    "paid":              UIAction.SHOW_PAID,
     "confirming":        UIAction.SHOW_CONFIRM_BOOKING,
 }
 
