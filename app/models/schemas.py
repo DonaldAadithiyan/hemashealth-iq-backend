@@ -122,6 +122,14 @@ class NavigationSnapshot(BaseModel):
     pending_location:       Optional[str] = None
 
 
+class PaidPayload(BaseModel):
+    appointment_id: str
+    doctor_name:    str
+    datetime_label: str
+    location:       str
+    specialty:      str
+
+
 class PhoneChoicePayload(BaseModel):
     logged_in_phone: str   # e.g. "+94773609683" — send this as next message if tapped
     logged_in_label: str   # e.g. "Use my number (+94773609683)"
@@ -146,13 +154,6 @@ class ConfirmBookingPayload(BaseModel):
     datetime_label: str
     location:       str
     slot_id:        str   # frontend sends this as message when patient confirms
-
-class PaidPayload(BaseModel):
-    appointment_id: str
-    doctor_name:    str
-    datetime_label: str
-    location:       str
-    specialty:      str
 
 
 # ── Stage → UIAction map ──────────────────────────────────────────────────────
@@ -224,8 +225,9 @@ class BookingState(BaseModel):
     # Navigation stack — checkpoints for going back
     navigation_stack:       Optional[list] = None
 
-    # Logged-in user's phone — sent by frontend, used to skip phone-number question
-    user_phone: Optional[str] = None
+    # Logged-in user identity — sent by frontend from Supabase Auth
+    user_id:    Optional[str] = None   # Supabase auth user UUID — use for patient lookup
+    user_phone: Optional[str] = None   # kept for fallback when user_id not available
 
     # Specialty choice — pending when agent narrowed down from gp_first
     specialty_choice_pending: bool = False
@@ -250,7 +252,8 @@ class BookingState(BaseModel):
 class ChatRequest(BaseModel):
     session_id:    str           = Field(..., description="UUID — generate once per conversation")
     message:       str           = Field(..., description="Patient's latest message")
-    user_phone:    Optional[str] = Field(None, description="Logged-in user's phone from Supabase auth. Send on every request when available.")
+    user_id:       Optional[str] = Field(None, description="Supabase Auth user UUID. Send on every request when logged in.")
+    user_phone:    Optional[str] = Field(None, description="Logged-in user phone. Fallback when user_id not available.")
     history:       list[ChatMessage] = Field(default=[])
     booking_state: BookingState  = Field(default_factory=BookingState)
 

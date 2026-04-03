@@ -104,6 +104,7 @@ class AgentState(TypedDict):
     is_recurring:            bool
     # Slot data from check_availability — used to build SHOW_SLOTS payload
     navigation_stack:          list | None
+    user_id:                   str | None
     user_phone:                str | None
     routing_tier:              str | None
     suggested_specialty:       str | None
@@ -177,6 +178,18 @@ def build_graph():
                 state = dict(state)
                 state["specialty_choice_pending"] = False
                 print(f"{MAGENTA}│  🔀 Patient chose specialist — detected_specialty = {state.get('detected_specialty')}{R}")
+
+        # Inject user_id context so agent knows to use it for patient lookup
+        user_id = state.get("user_id")
+        if user_id:
+            system_messages_prefix = [SystemMessage(content=SYSTEM_PROMPT)]
+            system_messages_prefix.append(SystemMessage(content=(
+                f"[User context] The patient is logged in. user_id = {user_id}. "
+                "When calling lookup_or_create_patient, ALWAYS pass user_id='{user_id}' "
+                "and do NOT ask for a phone number."
+            ).replace("{user_id}", user_id)))
+        else:
+            system_messages_prefix = [SystemMessage(content=SYSTEM_PROMPT)]
 
         # Guard: if stage is "confirmed" and message looks like a payment confirmation,
         # inject a hard reminder so the LLM doesn't call book_appointment again
@@ -318,7 +331,13 @@ def build_graph():
             for tc in unmasked_tool_calls:
                 args = dict(tc.get("args", {}))
 
-                if tc.get("name") == "book_appointment":
+                if tc.get("name") == "lookup_or_create_patient":
+                    # Always inject user_id from state if available
+                    if state.get("user_id") and not args.get("user_id"):
+                        args["user_id"] = state["user_id"]
+                        print(f"{YELLOW}│  🔧 INJECTING user_id into lookup_or_create_patient{R}")
+
+                elif tc.get("name") == "book_appointment":
                     # Override patient_id from state — LLM may pick wrong UUID
                     real_pid = state.get("patient_id")
                     if real_pid and args.get("patient_id") != real_pid:

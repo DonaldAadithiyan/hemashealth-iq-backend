@@ -220,6 +220,50 @@ def parse_synthetic_slot_id(slot_id: str) -> tuple[str, str]:
 
 # ── Patients ──────────────────────────────────────────────────────────────────
 
+def find_patient_by_user_id(user_id: str) -> dict | None:
+    """
+    Look up a patient directly by Supabase Auth user UUID.
+    Faster and more reliable than phone lookup — use when user is logged in.
+    Returns normalised dict: id (patient.id), name, phone, email, user_id
+    """
+    sb = get_supabase()
+
+    # Get user details
+    user_resp = (
+        sb.table("users")
+        .select("id, full_name, email, phone")
+        .eq("id", user_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    user_rows = user_resp.data or []
+    if not user_rows:
+        return None
+    user = user_rows[0]
+
+    # Get patient record
+    patient_resp = (
+        sb.table("patients")
+        .select("id, user_id")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    patient_rows = patient_resp.data or []
+    if not patient_rows:
+        return None
+    patient = patient_rows[0]
+
+    return {
+        "id":      patient["id"],
+        "user_id": user["id"],
+        "name":    user["full_name"],
+        "phone":   user.get("phone", ""),
+        "email":   user.get("email", ""),
+    }
+
+
 def find_patient_by_phone(phone: str) -> dict | None:
     """
     Look up a patient by phone number.

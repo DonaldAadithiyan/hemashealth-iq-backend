@@ -262,6 +262,8 @@ async def chat(req: ChatRequest):
         vault = get_vault(req.session_id)
         bs    = req.booking_state
 
+        if req.user_id and not bs.user_id:
+            bs.user_id = req.user_id
         if req.user_phone and not bs.user_phone:
             bs.user_phone = req.user_phone
 
@@ -351,6 +353,7 @@ async def chat(req: ChatRequest):
             last_visit_specialty    = bs.last_visit_specialty,
             last_visit_doctor       = bs.last_visit_doctor,
             navigation_stack        = bs.navigation_stack,
+            user_id                 = bs.user_id,
             conversation_summary    = bs.conversation_summary,
         )
     except Exception as e:
