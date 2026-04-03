@@ -159,6 +159,25 @@ def build_graph():
         print(f"{DIM}│  📍 Stage: {YELLOW}{state.get('stage', 'intake')}{R}")
         print(f"{DIM}│  🔒 Vault tokens registered: {state['vault'].debug_summary()['total_tokens']}{R}")
 
+        # Resolve specialty choice — when patient tapped "gp" button
+        # update detected_specialty before the LLM runs
+        last_msg = state["messages"][-1] if state["messages"] else None
+        if (state.get("specialty_choice_pending")
+                and last_msg is not None
+                and hasattr(last_msg, "content")):
+            msg_text = str(last_msg.content).strip().lower()
+            if msg_text == "gp":
+                # Patient chose General Medicine
+                state = dict(state)
+                state["detected_specialty"]      = "General Medicine"
+                state["specialty_choice_pending"] = False
+                print(f"{MAGENTA}│  🔀 Patient chose GP — detected_specialty = General Medicine{R}")
+            elif msg_text == "specialist":
+                # Patient chose specialist — detected_specialty already set correctly
+                state = dict(state)
+                state["specialty_choice_pending"] = False
+                print(f"{MAGENTA}│  🔀 Patient chose specialist — detected_specialty = {state.get('detected_specialty')}{R}")
+
         # Build context with slot lookup injected as system context
         # so agent knows slot datetimes when patient sends a slot_id
         system_messages = [SystemMessage(content=SYSTEM_PROMPT)]

@@ -6,7 +6,7 @@ from app.models.schemas import (
     PatientFormPayload, LastVisitInfo,
     PaymentPayload, CancelledPayload, RescheduledPayload,
     SpecialtyChoicePayload, SpecialtyChoiceButton,
-    PhoneChoicePayload, ConfirmBookingPayload,
+    PhoneChoicePayload, ConfirmBookingPayload, PaidPayload,
     LOCATION_LABELS, _format_datetime_label,
 )
 from app.agents.patient_agent import run_agent
@@ -31,6 +31,11 @@ def _decide_ui_action(state: BookingState, reply: str, prev_stage: str) -> UIAct
     reply_lower = reply.lower()
 
     # ── Terminal states — always correct ──────────────────────────────────
+    if stage == "paid":
+        if state.appointment_id:
+            return UIAction.SHOW_PAID
+        return UIAction.SHOW_CHAT
+
     if stage == "emergency":
         return UIAction.SHOW_EMERGENCY
 
@@ -68,6 +73,17 @@ def _decide_ui_action(state: BookingState, reply: str, prev_stage: str) -> UIAct
         ])
         if presenting_slots and state.available_doctors:
             return UIAction.SHOW_SLOTS
+
+        # Phone choice — agent asks for phone while still in slots_shown
+        # (stage advances to collecting only after lookup_or_create_patient is called)
+        if state.user_phone and not state.patient_id:
+            asking_phone = any(kw in reply_lower for kw in [
+                "phone number", "which number", "number should i use",
+                "complete the booking", "to complete", "use?",
+                "registered with us", "already registered", "check if you",
+            ])
+            if asking_phone or (len(reply_lower) < 120 and reply_lower.strip().endswith("?")):
+                return UIAction.SHOW_PHONE_CHOICE
 
         # Anything else while in slots_shown → plain chat
         return UIAction.SHOW_CHAT
@@ -159,6 +175,20 @@ def _build_payload(action: UIAction, state: BookingState):
             datetime_label = _format_datetime_label(dt),
             location       = f"Hemas Hospital, {loc_label}",
             slot_id        = state.pending_slot_id,
+        )
+
+    if action == UIAction.SHOW_PAID:
+        if not state.appointment_id:
+            return None
+        loc = state.preferred_location or ""
+        loc_label = LOCATION_LABELS.get(loc, (loc, ""))[0] if loc else ""
+        dt = state.selected_slot_datetime or ""
+        return PaidPayload(
+            appointment_id = state.appointment_id,
+            doctor_name    = state.selected_doctor_name or "",
+            datetime_label = _format_datetime_label(dt),
+            location       = f"Hemas Hospital, {loc_label}",
+            specialty      = state.detected_specialty or "",
         )
 
     if action == UIAction.SHOW_PHONE_CHOICE:
