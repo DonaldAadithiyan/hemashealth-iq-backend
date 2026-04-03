@@ -15,7 +15,14 @@ from app.db.supabase import (
     get_doctor,
     parse_synthetic_slot_id,
 )
+from pydantic import BaseModel
+from typing import Optional
 from app.models.schemas import AppointmentOut, CancelRequest, RescheduleRequest, AppointmentStatus
+
+
+class PaymentStatusRequest(BaseModel):
+    status:      str            # "paid" | "confirmed"
+    payment_ref: Optional[str] = None  # payment gateway transaction ID (Stripe charge ID, PayHere txn, etc.)
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 
@@ -107,6 +114,56 @@ def reschedule_appointment_endpoint(appointment_id: str, body: RescheduleRequest
 
     updated = get_appointment(appointment_id)
     return _enrich(updated)
+
+
+@router.patch("/{appointment_id}/status")
+def update_payment_status_endpoint(appointment_id: str, body: PaymentStatusRequest):
+    """
+    Called by the frontend after a successful payment.
+    Updates the appointment status in Supabase.
+
+    Called by:
+    - Stripe webhook / PayHere callback: status="paid", payment_ref="txn_abc123"
+    - Admin confirming: status="confirmed"
+
+    Allowed transitions:
+      reserved  → confirmed | paid | cancelled
+      confirmed → paid | cancelled
+      paid      → completed | cancelled
+    """
+    appt = get_appointment(appointment_id)
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    current = appt["status"]
+    new_status = body.status
+
+    # Validate allowed transitions
+    allowed = {
+        "reserved":  ["confirmed", "paid", "cancelled"],
+        "confirmed": ["paid", "cancelled", "completed"],
+        "paid":      ["completed", "cancelled"],
+    }
+    if current not in allowed or new_status not in allowed.get(current, []):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot transition from '{current}' to '{new_status}'"
+        )
+
+    # Store payment_ref in notes if provided
+    notes = None
+    if body.payment_ref:
+        notes = f"payment_ref:{body.payment_ref}"
+
+    update_appointment_status(appointment_id, new_status, notes=notes)
+
+    updated = get_appointment(appointment_id)
+    return {
+        "success":        True,
+        "appointment_id": appointment_id,
+        "status":         new_status,
+        "payment_ref":    body.payment_ref,
+    }
 
 
 @router.delete("/{appointment_id}")

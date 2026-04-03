@@ -61,14 +61,6 @@ def _decide_ui_action(state: BookingState, reply: str, prev_stage: str) -> UIAct
 
     # ── Slots shown — only show slots when agent is presenting them ──────────
     if stage == "slots_shown":
-        # Agent asking to confirm a specific slot → confirm button
-        asking_confirm = any(kw in reply_lower for kw in [
-            "shall i confirm", "confirm this booking",
-            "shall i proceed with booking", "confirm the booking"
-        ])
-        if asking_confirm and state.pending_slot_id and state.pending_doctor_name:
-            return UIAction.SHOW_CONFIRM_BOOKING
-
         # Agent presenting slots → show slot cards
         presenting_slots = any(kw in reply_lower for kw in [
             "available slots", "please choose", "choose from", "choose below",
@@ -77,7 +69,7 @@ def _decide_ui_action(state: BookingState, reply: str, prev_stage: str) -> UIAct
         if presenting_slots and state.available_doctors:
             return UIAction.SHOW_SLOTS
 
-        # Agent is responding to slot choice or doing something else → just chat
+        # Anything else while in slots_shown → plain chat
         return UIAction.SHOW_CHAT
 
     # ── Collecting — only show patient form when agent is asking about patient ─
@@ -86,9 +78,12 @@ def _decide_ui_action(state: BookingState, reply: str, prev_stage: str) -> UIAct
         if state.user_phone and not state.patient_id:
             asking_phone = any(kw in reply_lower for kw in [
                 "phone number", "which number", "number should i use",
-                "already registered", "check if you"
+                "already registered", "check if you", "complete the booking",
+                "to complete", "which number", "use?", "number to use",
+                "registered with us",
             ])
-            if asking_phone:
+            # Also fire if reply is short and asking-style (ends with ?)
+            if asking_phone or (len(reply_lower) < 120 and reply_lower.strip().endswith("?")):
                 return UIAction.SHOW_PHONE_CHOICE
 
         # Patient form when agent is greeting or asking for name

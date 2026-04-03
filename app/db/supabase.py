@@ -423,9 +423,12 @@ def get_all_appointments(
     )
 
 
-def update_appointment_status(appointment_id: str, status: str) -> bool:
+def update_appointment_status(appointment_id: str, status: str, notes: str | None = None) -> bool:
     sb = get_supabase()
-    sb.table("appointments").update({"status": status}).eq("id", appointment_id).execute()
+    update_data: dict = {"status": status}
+    if notes:
+        update_data["notes"] = notes
+    sb.table("appointments").update(update_data).eq("id", appointment_id).execute()
     return True
 
 
