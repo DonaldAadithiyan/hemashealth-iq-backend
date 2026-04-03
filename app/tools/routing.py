@@ -441,9 +441,18 @@ MEDICATION_KEYWORDS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _match_table(text: str, table: dict) -> str | None:
+    import re
     for keyword, specialty in table.items():
-        if keyword in text:
-            return specialty
+        # For short keywords (≤4 chars) that could be substrings of other words,
+        # require word boundaries to avoid false matches
+        # e.g. "ent" matching inside "mentally", "gp" matching inside "gps"
+        if len(keyword) <= 4 and keyword.isalpha():
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, text):
+                return specialty
+        else:
+            if keyword in text:
+                return specialty
     return None
 
 def _is_clarify(text: str) -> bool:
