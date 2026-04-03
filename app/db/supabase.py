@@ -327,8 +327,9 @@ def create_appointment(
 ) -> dict:
     sb = get_supabase()
 
-    # Double-check no appointment already exists at this datetime for this doctor
-    clash = (
+    # Allow up to MAX_BOOKINGS_PER_SLOT per doctor slot
+    MAX_BOOKINGS_PER_SLOT = 5
+    existing = (
         sb.table("appointments")
         .select("id")
         .eq("doctor_id", doctor_id)
@@ -337,8 +338,8 @@ def create_appointment(
         .execute()
         .data
     )
-    if clash:
-        return None  # Caller handles this as a booking conflict
+    if len(existing) >= MAX_BOOKINGS_PER_SLOT:
+        return None  # Slot is fully booked
 
     resp = (
         sb.table("appointments")

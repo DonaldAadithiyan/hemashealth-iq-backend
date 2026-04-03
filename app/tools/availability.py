@@ -141,9 +141,7 @@ def check_availability(specialty: str, location: str, date: str | None = None) -
                 "searched_location":  location,
                 "fallback_used":      True,
                 "fallback_reason": (
-                    f"No {specialty} doctors are currently available at {loc_label}. "
-                    f"I've found a {alt_specialty} specialist at {loc_label} who can "
-                    f"assess your condition and refer you to a {specialty} specialist if needed."
+                    f"No {specialty} doctors available at {loc_label} — showing {alt_specialty} at {loc_label} instead."
                 ),
             }
 
@@ -160,8 +158,7 @@ def check_availability(specialty: str, location: str, date: str | None = None) -
                 "searched_location":  other_loc,
                 "fallback_used":      True,
                 "fallback_reason": (
-                    f"No {specialty} doctors are available at {loc_label} right now. "
-                    f"I found a {specialty} specialist at our {other_loc_label} location instead."
+                    f"No {specialty} doctors available at {loc_label} — showing {specialty} at {other_loc_label} instead."
                 ),
             }
 
@@ -179,8 +176,7 @@ def check_availability(specialty: str, location: str, date: str | None = None) -
                     "searched_location":  other_loc,
                     "fallback_used":      True,
                     "fallback_reason": (
-                        f"No {specialty} doctors are available at either location right now. "
-                        f"I've found a {alt_specialty} specialist at {other_loc_label} who can help."
+                        f"No {specialty} doctors available at either location — showing {alt_specialty} at {other_loc_label}."
                     ),
                 }
 

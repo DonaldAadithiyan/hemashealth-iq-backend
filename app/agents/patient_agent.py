@@ -240,6 +240,8 @@ async def run_agent(
             "last_visit_date":         result.get("last_visit_date"),
             "last_visit_specialty":    result.get("last_visit_specialty"),
             "last_visit_doctor":       result.get("last_visit_doctor"),
+            "navigation_stack":        result.get("navigation_stack"),
+            "user_phone":              result.get("user_phone") or user_phone,
             "conversation_summary":   new_summary,
         },
     }

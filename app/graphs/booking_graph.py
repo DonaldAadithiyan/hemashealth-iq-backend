@@ -29,9 +29,6 @@ from app.tools.availability import check_availability
 from app.tools.patient import lookup_or_create_patient
 from app.tools.booking import book_appointment, cancel_appointment, reschedule_appointment
 from app.utils.pii_vault import PIIVault
-from app.tools.specialty_choice import signal_specialty_choice
-from app.tools.rewind import rewind_booking
-from app.tools.payment import confirm_payment
 
 ALL_TOOLS = [
     route_to_specialist,
@@ -40,9 +37,6 @@ ALL_TOOLS = [
     book_appointment,
     cancel_appointment,
     reschedule_appointment,
-    signal_specialty_choice,
-    rewind_booking,
-    confirm_payment,
 ]
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
@@ -63,9 +57,6 @@ TOOL_COLOURS = {
     "book_appointment":         GREEN,
     "cancel_appointment":       RED,
     "reschedule_appointment":   CYAN,
-    "signal_specialty_choice":  MAGENTA,
-    "rewind_booking":           YELLOW,
-    "confirm_payment":          GREEN,
 }
 
 def _log_node(name: str, colour: str = CYAN):
@@ -187,9 +178,41 @@ def build_graph():
                 state["specialty_choice_pending"] = False
                 print(f"{MAGENTA}│  🔀 Patient chose specialist — detected_specialty = {state.get('detected_specialty')}{R}")
 
+        # Guard: if stage is "confirmed" and message looks like a payment confirmation,
+        # inject a hard reminder so the LLM doesn't call book_appointment again
+        current_stage = state.get("stage", "intake")
+        last_msg_text = ""
+        if state["messages"]:
+            last = state["messages"][-1]
+            if hasattr(last, "content"):
+                last_msg_text = str(last.content).lower().strip()
+
+        PAYMENT_TRIGGERS = [
+            "payment successful", "payment done", "payment completed", "paid",
+            "i've paid", "pay at hospital", "pay on arrival", "i'll pay there",
+            "pay at the hospital", "payment success",
+        ]
+        is_payment_msg = any(t in last_msg_text for t in PAYMENT_TRIGGERS)
+
+        system_messages = [SystemMessage(content=SYSTEM_PROMPT)]
+
+        # Fire guard if appointment_id is set AND message is a payment trigger
+        # Don't restrict to "confirmed" stage — frontend may be one turn behind
+        if is_payment_msg and state.get("appointment_id"):
+            appt_id = state.get("appointment_id", "")
+            payment_guard = (
+                "CRITICAL INSTRUCTION: The appointment is already booked. "
+                f"appointment_id = {appt_id}. "
+                "The patient has just confirmed payment. "
+                "You MUST call confirm_payment with this appointment_id RIGHT NOW. "
+                "Do NOT call book_appointment. Do NOT call check_availability. "
+                "Do NOT ask for a slot. Just call confirm_payment immediately."
+            )
+            system_messages.append(SystemMessage(content=payment_guard))
+            print(f"{GREEN}│  💉 Payment guard injected for appointment {appt_id[:20]}{R}")
+
         # Build context with slot lookup injected as system context
         # so agent knows slot datetimes when patient sends a slot_id
-        system_messages = [SystemMessage(content=SYSTEM_PROMPT)]
         if state.get("stage") == "slots_shown":
             doctors = state.get("available_doctors") or []
             slot_lines = []
@@ -511,70 +534,6 @@ def build_graph():
                     extra["selected_slot_datetime"] = data.get("new_slot_datetime")
                     extra["selected_doctor_name"]   = data.get("doctor_name")
                     extra["stage"]                  = "confirmed"
-
-            elif name == "signal_specialty_choice":
-                if data.get("choice_pending"):
-                    specialist = data.get("specialist", "")
-                    reason     = data.get("reason", "")
-                    extra["stage"]                    = "specialty_choice"
-                    extra["specialty_choice_pending"] = True
-                    extra["suggested_specialty"]      = specialist
-                    extra["specialty_choice_reason"]  = reason
-                    extra["detected_specialty"]       = specialist
-                    extra["specialty_choice_options"] = [
-                        {"value": "specialist", "label": f"Book with {specialist}", "specialty": specialist},
-                        {"value": "gp",         "label": "Book with General Medicine", "specialty": "General Medicine"},
-                    ]
-                    print(f"{MAGENTA}│  🔀 SPECIALTY CHOICE: {specialist} — {reason[:50]}{R}")
-
-            elif name == "rewind_booking":
-                if data.get("rewound"):
-                    target = data.get("target", "slot")
-                    stack  = list(state.get("navigation_stack") or [])
-                    print(f"{YELLOW}│  ↩ REWIND to: {target}{R}")
-                    if target == "start":
-                        extra.update({
-                            "stage": "intake",
-                            "detected_specialty": None, "preferred_location": None,
-                            "available_doctors": None, "fallback_used": False,
-                            "fallback_reason": None, "pending_slot_id": None,
-                            "pending_slot_datetime": None, "pending_doctor_name": None,
-                            "pending_doctor_id": None, "pending_specialty": None,
-                            "pending_location": None, "selected_slot_id": None,
-                            "selected_slot_datetime": None, "selected_doctor_id": None,
-                            "selected_doctor_name": None, "navigation_stack": [],
-                        })
-                    else:
-                        snap = None
-                        new_stack = []
-                        for s in stack:
-                            if isinstance(s, dict) and s.get("checkpoint") == target:
-                                snap = s
-                            elif snap is None:
-                                new_stack.append(s)
-                        if snap:
-                            extra.update({
-                                "stage":                  snap.get("stage", "routing"),
-                                "detected_specialty":     snap.get("detected_specialty"),
-                                "preferred_location":     snap.get("preferred_location"),
-                                "available_doctors":      snap.get("available_doctors"),
-                                "fallback_used":          snap.get("fallback_used", False),
-                                "fallback_reason":        snap.get("fallback_reason"),
-                                "pending_slot_id":        None,
-                                "pending_slot_datetime":  None,
-                                "pending_doctor_name":    None,
-                                "pending_doctor_id":      None,
-                                "pending_specialty":      None,
-                                "pending_location":       None,
-                                "navigation_stack":       new_stack,
-                            })
-                        else:
-                            extra["stage"] = "routing"
-
-            elif name == "confirm_payment":
-                if data.get("success"):
-                    extra["stage"] = "paid"
-                    print(f"{GREEN}│  💳 PAYMENT CONFIRMED: {data.get('appointment_id','')[:30]}{R}")
 
 
             # For lookup_or_create_patient: embed patient_id token hint in the

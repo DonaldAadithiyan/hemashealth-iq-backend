@@ -265,6 +265,56 @@ async def chat(req: ChatRequest):
         if req.user_phone and not bs.user_phone:
             bs.user_phone = req.user_phone
 
+        # ── Payment shortcut ─────────────────────────────────────────────────
+        # If appointment_id is already set and message is a payment confirmation,
+        # skip the agent entirely and call confirm_payment directly.
+        # This prevents the agent from calling book_appointment again.
+        PAYMENT_TRIGGERS = [
+            "payment successful", "payment done", "payment completed",
+            "paid", "i've paid", "i have paid", "payment success",
+            "pay at hospital", "pay on arrival", "i'll pay there",
+            "pay at the hospital", "paying at hospital",
+        ]
+        msg_lower = req.message.strip().lower()
+        is_payment = any(t in msg_lower for t in PAYMENT_TRIGGERS)
+
+        if is_payment and bs.appointment_id:
+            from app.db.supabase import update_appointment_status, get_appointment
+            pay_at_hosp = any(t in msg_lower for t in [
+                "pay at hospital", "pay on arrival", "pay at the hospital",
+                "paying at hospital", "i'll pay there",
+            ])
+            new_status = "confirmed" if pay_at_hosp else "paid"
+            try:
+                appt = get_appointment(bs.appointment_id)
+                if appt and appt["status"] not in ("paid", "confirmed", "completed"):
+                    update_appointment_status(bs.appointment_id, new_status)
+            except Exception:
+                pass  # don't crash — fall through to agent
+
+            new_bs = bs.model_copy(update={"stage": "paid"})
+            reply = (
+                "✅ All set! Please pay at reception on arrival. "
+                "You can view your booking in the **Appointments** section. See you soon!"
+                if pay_at_hosp else
+                "🎉 Payment confirmed! Your booking is complete. "
+                "You can view it in the **Appointments** section. Have a healthy day!"
+            )
+
+            ui_action  = _decide_ui_action(new_bs, reply, bs.stage)
+            ui_payload = _build_payload(ui_action, new_bs)
+            if ui_payload is None and ui_action != UIAction.SHOW_CHAT:
+                ui_action = UIAction.SHOW_CHAT
+
+            return ChatResponse(
+                session_id = req.session_id,
+                reply      = reply,
+                ui_action  = ui_action,
+                ui_payload = ui_payload,
+                state      = new_bs,
+            )
+        # ── End payment shortcut ─────────────────────────────────────────────
+
         result = await run_agent(
             new_message             = req.message,
             history                 = req.history,
